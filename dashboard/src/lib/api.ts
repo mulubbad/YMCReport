@@ -1,3 +1,5 @@
+const BASE = import.meta.env.VITE_API_URL ?? ""
+
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem("token")
   return token ? { Authorization: `Bearer ${token}` } : {}
@@ -9,7 +11,7 @@ async function fail(res: Response): Promise<never> {
 }
 
 async function request(path: string, init: RequestInit = {}): Promise<any> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${BASE}/api${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", ...authHeaders() },
   })
@@ -31,7 +33,7 @@ export const api = {
     request(path, { method: "PUT", body: JSON.stringify(body) }),
   del: (path: string) => request(path, { method: "DELETE" }),
   download: async (path: string) => {
-    const res = await fetch(`/api${path}`, { headers: authHeaders() })
+    const res = await fetch(`${BASE}/api${path}`, { headers: authHeaders() })
     if (!res.ok) await fail(res)
     const name =
       res.headers.get("Content-Disposition")?.match(/filename="?([^"]+?)"?$/)?.[1] ??

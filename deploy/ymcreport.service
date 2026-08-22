@@ -1,0 +1,15 @@
+[Unit]
+Description=YMCReport API
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/ymcreport/server
+ExecStart=/usr/bin/node src/index.js
+EnvironmentFile=/etc/ymcreport.env
+Environment=PORT=3001
+Environment=DB_PATH=/var/lib/ymcreport/data.db
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
