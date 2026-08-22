@@ -1,0 +1,434 @@
+import { useEffect, useState, type FormEvent } from "react"
+import { Pencil, Plus, Trash2, Users as UsersIcon } from "lucide-react"
+import { toast } from "sonner"
+import { api } from "@/lib/api"
+import { useAuth } from "@/lib/auth"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+
+type UserRow = {
+  id: number
+  username: string
+  name: string
+  role: "super" | "admin" | "user"
+  group_id: number | null
+  active: number
+}
+type Group = { id: number; name: string }
+
+const roleVariant = {
+  super: "danger",
+  admin: "primary-light",
+  user: "success",
+} as const
+
+const roleLabel = {
+  super: "مشرف عام",
+  admin: "مدير مجموعة",
+  user: "عضو",
+} as const
+
+const emptyForm = { username: "", password: "", name: "", role: "user", group_id: "" }
+
+const initials = (name: string) =>
+  name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join("")
+
+export default function Users() {
+  const me = useAuth().user!
+  const isSuper = me.role === "super"
+  const [rows, setRows] = useState<UserRow[] | null>(null)
+  const [groups, setGroups] = useState<Group[]>([])
+  const [filterGroup, setFilterGroup] = useState("")
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<UserRow | null>(null)
+  const [form, setForm] = useState(emptyForm)
+  const [deleting, setDeleting] = useState<UserRow | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = () => api.get("/users").then(setRows).catch((e) => toast.error(e.message))
+
+  useEffect(() => {
+    load()
+    if (isSuper) api.get("/groups").then(setGroups).catch(() => {})
+  }, [])
+
+  const groupName = (id: number | null) =>
+    groups.find((g) => g.id === id)?.name ?? "—"
+
+  // ponytail: client-side group filter; the /users call stays unchanged
+  const visible = rows?.filter((u) => !filterGroup || String(u.group_id) === filterGroup) ?? []
+
+  const openCreate = () => {
+    setEditing(null)
+    setForm(emptyForm)
+    setOpen(true)
+  }
+
+  const openEdit = (u: UserRow) => {
+    setEditing(u)
+    setForm({
+      username: u.username,
+      password: "",
+      name: u.name,
+      role: u.role,
+      group_id: u.group_id ? String(u.group_id) : "",
+    })
+    setOpen(true)
+  }
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      const superFields = isSuper
+        ? { role: form.role, group_id: form.group_id ? Number(form.group_id) : null }
+        : {}
+      if (editing) {
+        await api.put(`/users/${editing.id}`, {
+          name: form.name,
+          ...(form.password ? { password: form.password } : {}),
+          ...superFields,
+        })
+      } else {
+        await api.post("/users", {
+          username: form.username,
+          password: form.password,
+          name: form.name,
+          ...superFields,
+        })
+      }
+      toast.success(editing ? "تم تحديث المستخدم" : "تم إنشاء المستخدم")
+      setOpen(false)
+      load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "حدث خطأ")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleActive = async (u: UserRow, checked: boolean) => {
+    try {
+      await api.put(`/users/${u.id}`, { active: checked ? 1 : 0 })
+      setRows((r) =>
+        r ? r.map((x) => (x.id === u.id ? { ...x, active: checked ? 1 : 0 } : x)) : r,
+      )
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "حدث خطأ")
+    }
+  }
+
+  const confirmDelete = async () => {
+    if (!deleting) return
+    try {
+      await api.del(`/users/${deleting.id}`)
+      toast.success("تم حذف المستخدم")
+      setDeleting(null)
+      load()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "حدث خطأ")
+    }
+  }
+
+  const identity = (u: UserRow) => (
+    <div className="flex min-w-0 items-center gap-3">
+      <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-primary-light text-sm font-semibold text-primary">
+        {initials(u.name)}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate font-medium">{u.name}</div>
+        <div className="truncate text-xs text-muted-foreground" dir="ltr">
+          @{u.username}
+        </div>
+      </div>
+    </div>
+  )
+
+  const actions = (u: UserRow) => (
+    <div className="flex shrink-0 gap-1">
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        aria-label={`تعديل ${u.name}`}
+        onClick={() => openEdit(u)}
+      >
+        <Pencil />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        aria-label={`حذف ${u.name}`}
+        disabled={u.id === me.id}
+        onClick={() => setDeleting(u)}
+      >
+        <Trash2 className="text-destructive" />
+      </Button>
+    </div>
+  )
+
+  const activeSwitch = (u: UserRow) => (
+    <Switch
+      aria-label={`تفعيل ${u.name}`}
+      checked={!!u.active}
+      disabled={u.id === me.id}
+      onCheckedChange={(c) => toggleActive(u, c)}
+    />
+  )
+
+  return (
+    <div className="space-y-4">
+      <Card className="gap-0 py-0">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 border-b px-4 py-4 md:px-6 [.border-b]:pb-4">
+          <div>
+            <div className="text-[1.05rem] font-bold">المستخدمون</div>
+            <div className="text-xs text-muted-foreground">
+              {rows ? `${visible.length} مستخدم` : "جارٍ التحميل…"}
+            </div>
+          </div>
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+            {isSuper && (
+              <Select value={filterGroup || "all"} onValueChange={(v) => setFilterGroup(v === "all" ? "" : v)}>
+                <SelectTrigger className="w-full sm:w-44" aria-label="تصفية حسب المجموعة">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">جميع المجموعات</SelectItem>
+                  {groups.map((g) => (
+                    <SelectItem key={g.id} value={String(g.id)}>
+                      {g.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Button className="w-full sm:w-auto" onClick={openCreate}>
+              <Plus />
+              مستخدم جديد
+            </Button>
+          </div>
+        </CardHeader>
+
+        <CardContent className="p-0">
+          {!rows ? (
+            <div className="space-y-3 p-4 md:p-6">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : visible.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 p-10 text-center">
+              <div className="flex size-14 items-center justify-center rounded-lg bg-primary-light text-primary">
+                <UsersIcon className="size-7" />
+              </div>
+              <p className="text-sm text-muted-foreground">لا يوجد مستخدمون بعد</p>
+              <Button onClick={openCreate}>
+                <Plus />
+                مستخدم جديد
+              </Button>
+            </div>
+          ) : (
+            <>
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader className="[&_th]:px-6 [&_th]:text-xs [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-wide [&_th]:text-muted-foreground">
+                    <TableRow>
+                      <TableHead>المستخدم</TableHead>
+                      <TableHead>الدور</TableHead>
+                      {isSuper && <TableHead>المجموعة</TableHead>}
+                      <TableHead>نشط</TableHead>
+                      <TableHead className="w-28" />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody className="[&_td]:px-6 [&_td]:py-3">
+                    {visible.map((u) => (
+                      <TableRow key={u.id} className="border-dashed">
+                        <TableCell>{identity(u)}</TableCell>
+                        <TableCell>
+                          <Badge variant={roleVariant[u.role]}>{roleLabel[u.role]}</Badge>
+                        </TableCell>
+                        {isSuper && (
+                          <TableCell className="text-muted-foreground">{groupName(u.group_id)}</TableCell>
+                        )}
+                        <TableCell>{activeSwitch(u)}</TableCell>
+                        <TableCell>
+                          <div className="flex justify-end">{actions(u)}</div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <div className="divide-y divide-dashed md:hidden">
+                {visible.map((u) => (
+                  <div key={u.id} className="space-y-3 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      {identity(u)}
+                      {actions(u)}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <Badge variant={roleVariant[u.role]}>{roleLabel[u.role]}</Badge>
+                      {isSuper && (
+                        <span className="text-xs text-muted-foreground">{groupName(u.group_id)}</span>
+                      )}
+                      <label className="ms-auto flex items-center gap-2 text-xs text-muted-foreground">
+                        نشط
+                        {activeSwitch(u)}
+                      </label>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{editing ? "تعديل المستخدم" : "مستخدم جديد"}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={save} className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="u-name">الاسم</Label>
+                <Input
+                  id="u-name"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="u-username">اسم المستخدم</Label>
+                <Input
+                  id="u-username"
+                  value={form.username}
+                  disabled={!!editing}
+                  onChange={(e) => setForm({ ...form, username: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="u-password">
+                  {editing ? "كلمة المرور الجديدة (اتركها فارغة للإبقاء على الحالية)" : "كلمة المرور"}
+                </Label>
+                <Input
+                  id="u-password"
+                  type="password"
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  required={!editing}
+                />
+              </div>
+              {isSuper && (
+                <>
+                  <div className="space-y-2">
+                    <Label>الدور</Label>
+                    <Select
+                      value={form.role}
+                      onValueChange={(v) => setForm({ ...form, role: v })}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="user">عضو</SelectItem>
+                        <SelectItem value="admin">مدير مجموعة</SelectItem>
+                        <SelectItem value="super">مشرف عام</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>المجموعة</Label>
+                    <Select
+                      value={form.group_id || "none"}
+                      onValueChange={(v) =>
+                        setForm({ ...form, group_id: v === "none" ? "" : v })
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">بدون مجموعة</SelectItem>
+                        {groups.map((g) => (
+                          <SelectItem key={g.id} value={String(g.id)}>
+                            {g.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              )}
+            </div>
+            <DialogFooter className="sticky bottom-0 bg-background pt-2">
+              <Button type="submit" disabled={busy}>
+                {editing ? "حفظ" : "إنشاء"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={!!deleting} onOpenChange={(o) => !o && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>حذف {deleting?.name}؟</AlertDialogTitle>
+            <AlertDialogDescription>
+              سيؤدي هذا إلى حذف المستخدم نهائيًا مع جميع حساباته وصفحاته.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>إلغاء</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete}>حذف</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}

@@ -1,0 +1,140 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Tokens: design-system/MASTER.md §1 */
+:root {
+  --radius: 0.625rem;
+  --background: #f5f8fa;
+  --foreground: #181c32;
+  --card: #ffffff;
+  --card-foreground: #181c32;
+  --popover: #ffffff;
+  --popover-foreground: #181c32;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --primary-light: #eff6ff;
+  --secondary: #f1f1f2;
+  --secondary-foreground: #181c32;
+  --muted: #f9f9f9;
+  --muted-foreground: #7e8299;
+  --accent: #f1f1f2;
+  --accent-foreground: #181c32;
+  --destructive: #d9214e;
+  --danger-light: #fff5f8;
+  --success: #0ba25f;
+  --success-light: #e8fff3;
+  --warning: #b47d00;
+  --warning-fill: #ffc700;
+  --warning-light: #fff8dd;
+  --info: #7239ea;
+  --info-light: #f8f5ff;
+  --border: #e4e6ef;
+  --input: #e4e6ef;
+  --ring: #2563eb;
+  --card-shadow: 0 0 20px 0 rgba(76, 87, 125, 0.02);
+  /* sidebar: identical in both modes */
+  --sidebar: #1e1e2d;
+  --sidebar-foreground: #9899ac;
+  --sidebar-accent: #1b1b28;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-heading: #4c4e6f;
+  --sidebar-border: #2b2b40;
+}
+
+.dark {
+  --background: #151521;
+  --foreground: #ffffff;
+  --card: #1e1e2d;
+  --card-foreground: #ffffff;
+  --popover: #1e1e2d;
+  --popover-foreground: #ffffff;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --primary-light: rgba(59, 130, 246, 0.16);
+  --secondary: #2b2b40;
+  --secondary-foreground: #ffffff;
+  --muted: #2b2b40;
+  --muted-foreground: #9d9da6;
+  --accent: #2b2b40;
+  --accent-foreground: #ffffff;
+  --destructive: #fb7185;
+  --danger-light: rgba(251, 113, 133, 0.16);
+  --success: #4ade80;
+  --success-light: rgba(74, 222, 128, 0.16);
+  --warning: #facc15;
+  --warning-fill: #facc15;
+  --warning-light: rgba(250, 204, 21, 0.16);
+  --info: #a78bfa;
+  --info-light: rgba(167, 139, 250, 0.16);
+  --border: #2b2b40;
+  --input: #2b2b40;
+  --ring: #3b82f6;
+  --card-shadow: none;
+}
+
+@theme inline {
+  --font-sans: "IBM Plex Sans Arabic", ui-sans-serif, system-ui, sans-serif;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-btn: 0.475rem;
+  --radius-badge: 0.425rem;
+  --shadow-card: var(--card-shadow);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-light: var(--primary-light);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-danger-light: var(--danger-light);
+  --color-success: var(--success);
+  --color-success-light: var(--success-light);
+  --color-warning: var(--warning);
+  --color-warning-fill: var(--warning-fill);
+  --color-warning-light: var(--warning-light);
+  --color-info: var(--info);
+  --color-info-light: var(--info-light);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-heading: var(--sidebar-heading);
+  --color-sidebar-border: var(--sidebar-border);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans text-sm antialiased;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

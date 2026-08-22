@@ -1,0 +1,13 @@
+{
+  "name": "ymcreport",
+  "private": true,
+  "scripts": {
+    "setup": "npm i --prefix server && npm i --prefix dashboard",
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev --prefix server\" \"npm run dev --prefix dashboard\"",
+    "build": "npm run build --prefix dashboard",
+    "start": "npm start --prefix server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
