@@ -33,6 +33,7 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//], // API is never served from the shell or cached — live data only
+        importScripts: ['push-sw.js'], // FCM push + notification click handlers (public/push-sw.js)
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\/.*/i,

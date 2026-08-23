@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from "react"
 import { api } from "./api"
+import { forgetPush } from "./push"
 
 export type User = {
   id: number
@@ -31,6 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
+    forgetPush()
     localStorage.removeItem("token")
     localStorage.removeItem("user")
     setUser(null)

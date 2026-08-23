@@ -1,4 +1,5 @@
-const BASE = import.meta.env.VITE_API_URL ?? ""
+export const BASE = import.meta.env.VITE_API_URL ?? ""
+export const getToken = () => localStorage.getItem("token")
 
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem("token")
@@ -17,9 +18,11 @@ const net = (url: string, init?: RequestInit) =>
   })
 
 async function request(path: string, init: RequestInit = {}): Promise<any> {
+  // FormData sets its own multipart boundary — never force a JSON content-type on it
+  const json = !(init.body instanceof FormData)
   const res = await net(`${BASE}/api${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { ...(json ? { "Content-Type": "application/json" } : {}), ...authHeaders() },
   })
   if (res.status === 401 && path !== "/login") {
     localStorage.removeItem("token")
@@ -38,6 +41,7 @@ export const api = {
   put: (path: string, body?: unknown) =>
     request(path, { method: "PUT", body: JSON.stringify(body) }),
   del: (path: string) => request(path, { method: "DELETE" }),
+  upload: (path: string, form: FormData) => request(path, { method: "POST", body: form }),
   download: async (path: string) => {
     const res = await net(`${BASE}/api${path}`, { headers: authHeaders() })
     if (!res.ok) await fail(res)

@@ -25,6 +25,7 @@ jobs:
         run: npm ci && npm run build
         env:
           VITE_API_URL: https://backend.ymcteam.org
+          VITE_FIREBASE_VAPID_KEY: ${{ secrets.VITE_FIREBASE_VAPID_KEY }}
 
       - name: SSH key
         run: |

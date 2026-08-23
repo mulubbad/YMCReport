@@ -128,6 +128,26 @@ CREATE TABLE IF NOT EXISTS entity_notes (
   body TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE INDEX IF NOT EXISTS ix_entity_notes ON entity_notes(entity_type, entity_id, id);
+CREATE TABLE IF NOT EXISTS push_tokens (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE INDEX IF NOT EXISTS ix_push_tokens_user ON push_tokens(user_id);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  body TEXT,
+  image_key TEXT,
+  mentions TEXT,
+  hashtags TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE INDEX IF NOT EXISTS ix_chat_messages ON chat_messages(group_id, id);
+CREATE TABLE IF NOT EXISTS chat_reads (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  last_read_id INTEGER NOT NULL DEFAULT 0);
 `);
 
 // migrate pre-existing DBs: add tasks columns missing from older schemas

@@ -463,9 +463,13 @@ r.get('/stats', (req, res) => {
     if (rng.error) return res.status(400).json({ error: rng.error });
     detail = dashboardDetail(me, rng, me.role === 'super' ? Number(req.query.group_id) || null : null);
   }
+  // unread chat messages in my room (super: the ?group_id room), not mine, past my read pointer
+  const roomId = me.role === 'super' ? Number(req.query.group_id) || null : me.group_id;
+  const chat_unread = roomId ? db.prepare(`SELECT COUNT(*) c FROM chat_messages WHERE group_id = ? AND deleted = 0 AND user_id != ?
+    AND id > COALESCE((SELECT last_read_id FROM chat_reads WHERE user_id = ?), 0)`).get(roomId, me.id, me.id).c : 0;
   // groupless admin has empty scope, not global
   if (me.role === 'admin' && !gid)
-    return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, accounts_by_type: [], detail });
+    return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, accounts_by_type: [], chat_unread, detail });
 
   const accWhere = onlyUser ? 'a.user_id = ?' : gid ? 'u.group_id = ?' : '1=1';
   const accArgs = onlyUser ? [onlyUser] : gid ? [gid] : [];
@@ -512,6 +516,7 @@ r.get('/stats', (req, res) => {
     my_pending,
     accounts_attention,
     accounts_by_type,
+    chat_unread,
     ...(detail && { detail }),
   });
 });

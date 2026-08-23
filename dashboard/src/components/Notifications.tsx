@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import {
   AlertTriangle,
+  AtSign,
   Bell,
   BellOff,
+  BellPlus,
   BellRing,
   CheckCircle2,
   ClipboardPlus,
@@ -23,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
+import { enablePush, pushState, syncPush } from "@/lib/push"
 import { cn } from "@/lib/utils"
 
 export type Notification = {
@@ -44,6 +47,7 @@ export const KINDS = {
   account_status: { label: "تغيّر حالة حساب", icon: ShieldAlert, tone: "bg-danger-light text-destructive" },
   task_nudge: { label: "تذكير", icon: BellRing, tone: "bg-warning-light text-warning" },
   message: { label: "رسالة خاصة", icon: MessageCircle, tone: "bg-info-light text-info" },
+  mention: { label: "إشارة إليك", icon: AtSign, tone: "bg-primary-light text-primary" },
 } as const
 
 const BASE_TITLE = "YMCReport — نظام متابعة الأعمال"
@@ -122,6 +126,17 @@ export function useNotifications() {
     }
   }, [fetchAll])
 
+  // service worker → page: a push arrived (refetch + toast via ymc:refresh) / OS notification clicked (navigate)
+  useEffect(() => {
+    const sw = navigator.serviceWorker
+    const onMsg = (e: MessageEvent) => {
+      if (e.data?.type === "push") window.dispatchEvent(new Event("ymc:refresh"))
+      if (e.data?.type === "navigate" && typeof e.data.link === "string") navigate(e.data.link)
+    }
+    sw?.addEventListener("message", onMsg)
+    return () => sw?.removeEventListener("message", onMsg)
+  }, [navigate])
+
   useEffect(() => {
     document.title = unread > 0 ? `(${unread}) ${BASE_TITLE}` : BASE_TITLE
   }, [unread])
@@ -138,6 +153,17 @@ export function useNotifications() {
 export function NotificationBell() {
   const { items, unread, loading, markRead } = useNotifications()
   const navigate = useNavigate()
+  const [push, setPush] = useState(pushState)
+  useEffect(syncPush, [])
+  const enable = async () => {
+    try {
+      if (await enablePush()) toast.success("تم تفعيل تنبيهات الجهاز")
+      else toast.error("لم يُسمح بالتنبيهات من المتصفح")
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+    setPush(pushState())
+  }
   const open = async (n: Notification) => {
     if (!n.read) await markRead([n.id]).catch(() => {})
     if (n.link) navigate(n.link)
@@ -178,6 +204,17 @@ export function NotificationBell() {
             </Button>
           )}
         </div>
+        {push === "default" && (
+          <button
+            type="button"
+            onClick={() => void enable()}
+            className="flex w-full items-center gap-3 border-b border-secondary bg-primary-light/60 px-4 py-2.5 text-start text-xs hover:bg-primary-light"
+          >
+            <BellPlus className="size-4 shrink-0 text-primary" />
+            <span className="flex-1">فعّل تنبيهات الجهاز لتصلك الإشعارات فورًا حتى عند إغلاق التطبيق</span>
+            <span className="font-semibold text-primary">تفعيل</span>
+          </button>
+        )}
         <div className="max-h-[60vh] overflow-y-auto">
           {loading && items.length === 0 ? (
             Array.from({ length: 3 }, (_, i) => (

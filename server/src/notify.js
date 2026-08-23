@@ -1,12 +1,18 @@
 const db = require('./db');
+const { push } = require('./push');
 
-const KINDS = new Set(['task_new', 'task_due_soon', 'task_overdue', 'task_done', 'account_stale', 'account_status', 'task_nudge', 'message']);
+const KINDS = new Set(['task_new', 'task_due_soon', 'task_overdue', 'task_done', 'account_stale', 'account_status', 'task_nudge', 'message', 'mention']);
 const ins = db.prepare('INSERT OR IGNORE INTO notifications (user_id, key, kind, title, body, link) VALUES (?,?,?,?,?,?)');
 // idempotent per (user, key) — UNIQUE(user_id, key) + INSERT OR IGNORE. kind enum lives here (no DB CHECK)
-const notify = db.transaction((userIds, { key, kind, title, body = null, link = null }) => {
+const insert = db.transaction((userIds, { key, kind, title, body = null, link = null }) => {
   if (!KINDS.has(kind)) throw new Error(`unknown notification kind: ${kind}`);
-  for (const uid of userIds) ins.run(uid, key, kind, title, body, link);
+  return userIds.filter((uid) => ins.run(uid, key, kind, title, body, link).changes > 0);
 });
+// rows actually inserted (not de-duplicated) also go out as FCM pushes; fire-and-forget, never blocks the request
+const notify = (userIds, n) => {
+  const fresh = insert(userIds, n);
+  if (fresh.length) push(fresh, n).catch((e) => console.warn('push:', e.message));
+};
 
 const groupAdmins = (gid, exceptId) =>
   db.prepare("SELECT id FROM users WHERE group_id = ? AND role = 'admin' AND active = 1 AND id != ?").all(gid, exceptId).map((u) => u.id);

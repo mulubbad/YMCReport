@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/sonner"
 import Layout from "@/components/Layout"
 import { AuthProvider, useAuth, type User } from "@/lib/auth"
 import Accounts from "@/pages/Accounts"
+import Chat from "@/pages/Chat"
 import Dashboard from "@/pages/Dashboard"
 import Export from "@/pages/Export"
 import Groups from "@/pages/Groups"
@@ -43,6 +44,7 @@ export default function App() {
               <Route path="/sims" element={<Sims />} />
               <Route path="/tasks" element={<Tasks />} />
               <Route path="/notifications" element={<Notifications />} />
+              <Route path="/chat" element={<Chat />} />
               <Route element={<RequireRole roles={["admin", "super"]} />}>
                 <Route path="/users" element={<Users />} />
                 <Route path="/settings" element={<Settings />} />

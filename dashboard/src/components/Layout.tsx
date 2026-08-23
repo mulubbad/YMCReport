@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  MessageSquareText,
   Moon,
   Settings,
   Smartphone,
@@ -38,6 +39,7 @@ const nav = [
   { to: "/sims", label: "خطوط الاتصال", icon: Smartphone, section: "العمل" },
   { to: "/tasks", label: "المهام", icon: ClipboardList, section: "العمل" },
   { to: "/notifications", label: "الإشعارات", icon: Bell, section: "العمل" },
+  { to: "/chat", label: "المحادثة", icon: MessageSquareText, section: "العمل" },
   { to: "/users", label: "المستخدمون", icon: Users, roles: ["admin", "super"], section: "الإدارة" },
   { to: "/groups", label: "المجموعات", icon: Building2, roles: ["super"], section: "الإدارة" },
   { to: "/settings", label: "الإعدادات", icon: Settings, roles: ["admin", "super"], section: "الإدارة" },
@@ -60,16 +62,27 @@ export default function Layout({ children }: { children: ReactNode }) {
   const { pathname } = useLocation()
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState(0)
+  const [chatUnread, setChatUnread] = useState(0)
   const firstItem = useRef<HTMLAnchorElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
 
-  // pending-tasks badge on المهام; refetch on route change + after any save (ymc:refresh)
+  // badges: pending tasks on المهام + unread chat on المحادثة; refetch on route change, every 60s, and after any save (ymc:refresh)
   useEffect(() => {
     const fetchStats = () =>
-      api.get("/stats").then((s) => setPending(s.my_pending ?? 0)).catch(() => {})
+      api
+        .get("/stats")
+        .then((s) => {
+          setPending(s.my_pending ?? 0)
+          setChatUnread(s.chat_unread ?? 0)
+        })
+        .catch(() => {})
     void fetchStats()
+    const timer = window.setInterval(fetchStats, 60_000)
     window.addEventListener("ymc:refresh", fetchStats)
-    return () => window.removeEventListener("ymc:refresh", fetchStats)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener("ymc:refresh", fetchStats)
+    }
   }, [pathname])
   const [dark, setDark] = useState(() =>
     document.documentElement.classList.contains("dark"),
@@ -154,6 +167,14 @@ export default function Layout({ children }: { children: ReactNode }) {
                   className="ms-auto min-w-5 rounded-full bg-destructive px-1.5 text-center text-[10px] leading-5 font-semibold text-white"
                 >
                   {pending}
+                </span>
+              )}
+              {to === "/chat" && chatUnread > 0 && (
+                <span
+                  aria-label={`${chatUnread} رسائل غير مقروءة`}
+                  className="ms-auto min-w-5 rounded-full bg-primary px-1.5 text-center text-[10px] leading-5 font-semibold text-white"
+                >
+                  {chatUnread > 99 ? "99+" : chatUnread}
                 </span>
               )}
             </NavLink>
