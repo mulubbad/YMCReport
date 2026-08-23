@@ -10,8 +10,14 @@ async function fail(res: Response): Promise<never> {
   throw new Error(body?.error ?? "حدث خطأ غير متوقع")
 }
 
+// fetch throws a bare TypeError("Failed to fetch") when offline — surface it in Arabic like every other error
+const net = (url: string, init?: RequestInit) =>
+  fetch(url, init).catch(() => {
+    throw new Error("تعذر الاتصال بالخادم — تحقق من اتصالك بالإنترنت")
+  })
+
 async function request(path: string, init: RequestInit = {}): Promise<any> {
-  const res = await fetch(`${BASE}/api${path}`, {
+  const res = await net(`${BASE}/api${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", ...authHeaders() },
   })
@@ -33,7 +39,7 @@ export const api = {
     request(path, { method: "PUT", body: JSON.stringify(body) }),
   del: (path: string) => request(path, { method: "DELETE" }),
   download: async (path: string) => {
-    const res = await fetch(`${BASE}/api${path}`, { headers: authHeaders() })
+    const res = await net(`${BASE}/api${path}`, { headers: authHeaders() })
     if (!res.ok) await fail(res)
     const name =
       res.headers.get("Content-Disposition")?.match(/filename="?([^"]+?)"?$/)?.[1] ??

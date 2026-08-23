@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { Brand } from "@/components/Logo"
+import { Pwa } from "@/components/Pwa"
 import { NotificationBell } from "@/components/Notifications"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
@@ -236,7 +237,10 @@ export default function Layout({ children }: { children: ReactNode }) {
           </div>
         </header>
         <main className="min-w-0 flex-1 p-4 lg:p-8">
-          <div className="mx-auto w-full max-w-[1400px]">{children}</div>
+          <div className="mx-auto w-full max-w-[1400px]">
+            <Pwa />
+            {children}
+          </div>
         </main>
       </div>
     </div>
