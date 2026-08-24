@@ -23,6 +23,7 @@ app.use('/api', require('./routes/sims'));
 app.use('/api', require('./routes/notes'));
 app.use('/api', require('./routes/tasks'));
 app.use('/api', require('./routes/export'));
+app.use('/api', require('./routes/profile'));
 app.use('/api', require('./routes/notifications'));
 app.use('/api', require('./routes/push'));
 app.use('/api', (req, res) => res.status(404).json({ error: 'المسار المطلوب غير موجود' }));

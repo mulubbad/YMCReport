@@ -11,6 +11,8 @@ import {
   MessageCircle,
   ScanSearch,
   ShieldAlert,
+  UserRoundCheck,
+  UserRoundPen,
   X,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -22,7 +24,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 
-type Kind = "task_new" | "task_due_soon" | "task_overdue" | "task_done" | "account_stale" | "account_status" | "task_nudge" | "message"
+type Kind = "task_new" | "task_due_soon" | "task_overdue" | "task_done" | "account_stale" | "account_status" | "task_nudge" | "message" | "profile_request" | "profile_reviewed"
 type Item = { id: number; kind: Kind; title: string; body: string | null; link: string | null; read: number; created_at: string }
 
 const KINDS: Record<Kind, { label: string; Icon: typeof Clock; tile: string }> = {
@@ -34,7 +36,11 @@ const KINDS: Record<Kind, { label: string; Icon: typeof Clock; tile: string }> =
   account_status: { label: "تغيّر حالة حساب", Icon: ShieldAlert, tile: "bg-danger-light text-destructive" },
   task_nudge: { label: "تذكير", Icon: BellRing, tile: "bg-warning-light text-warning" },
   message: { label: "رسالة خاصة", Icon: MessageCircle, tile: "bg-info-light text-info" },
+  profile_request: { label: "طلب تعديل بيانات", Icon: UserRoundPen, tile: "bg-primary-light text-primary" },
+  profile_reviewed: { label: "مراجعة طلب تعديل", Icon: UserRoundCheck, tile: "bg-success-light text-success" },
 }
+// unknown kinds (older/newer server) render with this instead of crashing
+const FALLBACK_KIND = { label: "إشعار", Icon: BellRing, tile: "bg-muted text-muted-foreground" }
 const KIND_KEYS = Object.keys(KINDS) as Kind[]
 const LIMIT = 30
 
@@ -229,7 +235,7 @@ export default function Notifications() {
                   </div>
                   <ul className="divide-y divide-dashed">
                     {g.rows.map((n) => {
-                      const { Icon, tile, label } = KINDS[n.kind]
+                      const { Icon, tile, label } = KINDS[n.kind] ?? FALLBACK_KIND
                       const isUnread = !n.read
                       return (
                         <li key={n.id}>

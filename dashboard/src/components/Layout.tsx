@@ -14,6 +14,7 @@ import {
   Settings,
   Smartphone,
   Sun,
+  UserRound,
   Users,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -35,6 +36,7 @@ import { useAuth } from "@/lib/auth"
 // sidebar sections: daily work first, then administration, then reporting (sections with no visible items are hidden)
 const nav = [
   { to: "/", label: "لوحة التحكم", icon: LayoutDashboard, section: "نظرة عامة" },
+  { to: "/profile", label: "الملف الشخصي", icon: UserRound, section: "نظرة عامة" },
   { to: "/accounts", label: "الحسابات", icon: AtSign, section: "العمل" },
   { to: "/sims", label: "خطوط الاتصال", icon: Smartphone, section: "العمل" },
   { to: "/tasks", label: "المهام", icon: ClipboardList, section: "العمل" },
@@ -249,6 +251,12 @@ export default function Layout({ children }: { children: ReactNode }) {
                   </span>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link to="/profile">
+                    <UserRound />
+                    الملف الشخصي
+                  </Link>
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={logout}>
                   <LogOut />
                   تسجيل الخروج

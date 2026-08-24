@@ -14,6 +14,7 @@ type AuthCtx = {
   user: User | null
   login: (username: string, password: string) => Promise<void>
   logout: () => void
+  refresh: () => Promise<void>
 }
 
 const Ctx = createContext<AuthCtx | null>(null)
@@ -38,7 +39,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
   }
 
-  return <Ctx.Provider value={{ user, login, logout }}>{children}</Ctx.Provider>
+  // pull fresh identity from the server (e.g. after an approved profile-change request)
+  const refresh = async () => {
+    const u = await api.get("/me")
+    setUser((prev) => {
+      if (!prev) return prev
+      const next = { ...prev, username: u.username, name: u.name, role: u.role, group_id: u.group_id }
+      localStorage.setItem("user", JSON.stringify(next))
+      return next
+    })
+  }
+
+  return <Ctx.Provider value={{ user, login, logout, refresh }}>{children}</Ctx.Provider>
 }
 
 export function useAuth() {

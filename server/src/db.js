@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL CHECK (role IN ('super','admin','user')),
   group_id INTEGER REFERENCES groups(id) ON DELETE SET NULL,
   active INTEGER NOT NULL DEFAULT 1,
+  last_seen_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS account_types (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,6 +129,16 @@ CREATE TABLE IF NOT EXISTS entity_notes (
   body TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE INDEX IF NOT EXISTS ix_entity_notes ON entity_notes(entity_type, entity_id, id);
+CREATE TABLE IF NOT EXISTS profile_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  changes TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','declined')),
+  note TEXT,
+  reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE INDEX IF NOT EXISTS ix_profile_requests ON profile_requests(user_id, id);
 CREATE TABLE IF NOT EXISTS push_tokens (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -160,7 +171,7 @@ for (const [col, ddl] of Object.entries({
   archived: 'archived INTEGER NOT NULL DEFAULT 0',
 })) if (!taskCols.has(col)) db.exec(`ALTER TABLE tasks ADD COLUMN ${ddl}`);
 
-for (const [table, col] of [['subtasks', 'actions'], ['interactions', 'actions_done']])
+for (const [table, col] of [['subtasks', 'actions'], ['interactions', 'actions_done'], ['users', 'last_seen_at']])
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col))
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`);
 

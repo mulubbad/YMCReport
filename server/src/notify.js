@@ -1,7 +1,7 @@
 const db = require('./db');
 const { push } = require('./push');
 
-const KINDS = new Set(['task_new', 'task_due_soon', 'task_overdue', 'task_done', 'account_stale', 'account_status', 'task_nudge', 'message', 'mention']);
+const KINDS = new Set(['task_new', 'task_due_soon', 'task_overdue', 'task_done', 'account_stale', 'account_status', 'task_nudge', 'message', 'mention', 'profile_request', 'profile_reviewed']);
 const ins = db.prepare('INSERT OR IGNORE INTO notifications (user_id, key, kind, title, body, link) VALUES (?,?,?,?,?,?)');
 // idempotent per (user, key) — UNIQUE(user_id, key) + INSERT OR IGNORE. kind enum lives here (no DB CHECK)
 const insert = db.transaction((userIds, { key, kind, title, body = null, link = null }) => {

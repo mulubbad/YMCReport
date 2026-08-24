@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react"
-import { Pencil, Plus, Trash2, Users as UsersIcon } from "lucide-react"
+import { CheckCircle2, Copy, Eye, EyeOff, Pencil, Plus, Trash2, Users as UsersIcon, Wand2 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { fullDate, minutesSince, relTime } from "@/lib/time"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
@@ -19,6 +20,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -42,6 +44,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { RequestsPanel } from "@/components/profileRequests"
 
 type UserRow = {
   id: number
@@ -50,6 +53,7 @@ type UserRow = {
   role: "super" | "admin" | "user"
   group_id: number | null
   active: number
+  last_seen_at: string | null
 }
 type Group = { id: number; name: string }
 
@@ -67,6 +71,18 @@ const roleLabel = {
 
 const emptyForm = { username: "", password: "", name: "", role: "user", group_id: "" }
 
+// unambiguous alphabet (no 0/O, 1/l/I) so credentials survive being read aloud or handwritten
+const genPassword = () => {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+  return Array.from(crypto.getRandomValues(new Uint32Array(12)), (n) => chars[n % chars.length]).join("")
+}
+
+const copyText = (v: string) =>
+  navigator.clipboard.writeText(v).then(
+    () => toast.success("تم النسخ"),
+    () => toast.error("تعذر النسخ — انسخ يدويًا"),
+  )
+
 const initials = (name: string) =>
   name
     .trim()
@@ -74,6 +90,26 @@ const initials = (name: string) =>
     .slice(0, 2)
     .map((w) => w[0])
     .join("")
+
+// the auth stamp is throttled to 60s, so anything under 2 min counts as online
+const isOnline = (u: { last_seen_at: string | null }) => !!u.last_seen_at && minutesSince(u.last_seen_at) < 2
+
+const lastActive = (u: { last_seen_at: string | null }) =>
+  !u.last_seen_at ? (
+    <span className="text-xs text-muted-foreground">لم يسجّل الدخول بعد</span>
+  ) : isOnline(u) ? (
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-success">
+      <span className="relative flex size-2" aria-hidden>
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-60 motion-reduce:hidden" />
+        <span className="relative inline-flex size-2 rounded-full bg-success" />
+      </span>
+      متصل الآن
+    </span>
+  ) : (
+    <span className="text-xs text-muted-foreground" title={fullDate(u.last_seen_at)}>
+      {relTime(u.last_seen_at)}
+    </span>
+  )
 
 export default function Users() {
   const me = useAuth().user!
@@ -86,12 +122,16 @@ export default function Users() {
   const [form, setForm] = useState(emptyForm)
   const [deleting, setDeleting] = useState<UserRow | null>(null)
   const [busy, setBusy] = useState(false)
+  const [showPw, setShowPw] = useState(false)
+  const [created, setCreated] = useState<{ name: string; username: string; password: string } | null>(null)
 
   const load = () => api.get("/users").then(setRows).catch((e) => toast.error(e.message))
 
   useEffect(() => {
     load()
     if (isSuper) api.get("/groups").then(setGroups).catch(() => {})
+    const t = setInterval(load, 60_000) // keep the monitor's last-active column fresh
+    return () => clearInterval(t)
   }, [])
 
   const groupName = (id: number | null) =>
@@ -103,6 +143,7 @@ export default function Users() {
   const openCreate = () => {
     setEditing(null)
     setForm(emptyForm)
+    setShowPw(false)
     setOpen(true)
   }
 
@@ -138,6 +179,7 @@ export default function Users() {
           name: form.name,
           ...superFields,
         })
+        setCreated({ name: form.name, username: form.username, password: form.password })
       }
       toast.success(editing ? "تم تحديث المستخدم" : "تم إنشاء المستخدم")
       setOpen(false)
@@ -174,8 +216,13 @@ export default function Users() {
 
   const identity = (u: UserRow) => (
     <div className="flex min-w-0 items-center gap-3">
-      <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-primary-light text-sm font-semibold text-primary">
-        {initials(u.name)}
+      <div className="relative shrink-0">
+        <div className="flex size-10 items-center justify-center rounded-md bg-primary-light text-sm font-semibold text-primary">
+          {initials(u.name)}
+        </div>
+        {isOnline(u) && (
+          <span className="absolute -bottom-0.5 -end-0.5 size-3 rounded-full border-2 border-card bg-success" aria-hidden />
+        )}
       </div>
       <div className="min-w-0">
         <div className="truncate font-medium">{u.name}</div>
@@ -219,6 +266,7 @@ export default function Users() {
 
   return (
     <div className="space-y-4">
+      {isSuper && <RequestsPanel onUserChanged={load} />}
       <Card className="gap-0 py-0">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 border-b px-4 py-4 md:px-6 [.border-b]:pb-4">
           <div>
@@ -277,6 +325,7 @@ export default function Users() {
                       <TableHead>المستخدم</TableHead>
                       <TableHead>الدور</TableHead>
                       {isSuper && <TableHead>المجموعة</TableHead>}
+                      <TableHead>آخر نشاط</TableHead>
                       <TableHead>نشط</TableHead>
                       <TableHead className="w-28" />
                     </TableRow>
@@ -291,6 +340,7 @@ export default function Users() {
                         {isSuper && (
                           <TableCell className="text-muted-foreground">{groupName(u.group_id)}</TableCell>
                         )}
+                        <TableCell className="whitespace-nowrap">{lastActive(u)}</TableCell>
                         <TableCell>{activeSwitch(u)}</TableCell>
                         <TableCell>
                           <div className="flex justify-end">{actions(u)}</div>
@@ -313,6 +363,7 @@ export default function Users() {
                       {isSuper && (
                         <span className="text-xs text-muted-foreground">{groupName(u.group_id)}</span>
                       )}
+                      {lastActive(u)}
                       <label className="ms-auto flex items-center gap-2 text-xs text-muted-foreground">
                         نشط
                         {activeSwitch(u)}
@@ -356,13 +407,41 @@ export default function Users() {
                 <Label htmlFor="u-password">
                   {editing ? "كلمة المرور الجديدة (اتركها فارغة للإبقاء على الحالية)" : "كلمة المرور"}
                 </Label>
-                <Input
-                  id="u-password"
-                  type="password"
-                  value={form.password}
-                  onChange={(e) => setForm({ ...form, password: e.target.value })}
-                  required={!editing}
-                />
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      id="u-password"
+                      type={showPw ? "text" : "password"}
+                      dir="ltr"
+                      autoComplete="new-password"
+                      className="pe-9"
+                      value={form.password}
+                      onChange={(e) => setForm({ ...form, password: e.target.value })}
+                      required={!editing}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute top-0 end-0 size-9"
+                      aria-label={showPw ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
+                      onClick={() => setShowPw((s) => !s)}
+                    >
+                      {showPw ? <EyeOff /> : <Eye />}
+                    </Button>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="light"
+                    onClick={() => {
+                      setForm((f) => ({ ...f, password: genPassword() }))
+                      setShowPw(true)
+                    }}
+                  >
+                    <Wand2 />
+                    توليد
+                  </Button>
+                </div>
               </div>
               {isSuper && (
                 <>
@@ -412,6 +491,54 @@ export default function Users() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* onboarding summary: credentials shown once after creation */}
+      <Dialog open={!!created} onOpenChange={(o) => !o && setCreated(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="size-5 text-success" />
+              تم إنشاء المستخدم
+            </DialogTitle>
+            <DialogDescription>
+              شارك بيانات الدخول مع {created?.name} — كلمة المرور لن تظهر مرة أخرى بعد إغلاق هذه النافذة.
+            </DialogDescription>
+          </DialogHeader>
+          {created && (
+            <div className="space-y-2">
+              {[
+                { label: "الرابط", value: window.location.origin },
+                { label: "اسم المستخدم", value: created.username },
+                { label: "كلمة المرور", value: created.password },
+              ].map((row) => (
+                <div key={row.label} className="flex items-center gap-3 rounded-md border border-dashed px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-muted-foreground">{row.label}</p>
+                    <p className="truncate text-sm font-medium tabular-nums" dir="ltr">{row.value}</p>
+                  </div>
+                  <Button variant="ghost" size="icon-lg" aria-label={`نسخ ${row.label}`} onClick={() => copyText(row.value)}>
+                    <Copy className="text-muted-foreground" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreated(null)}>
+              إغلاق
+            </Button>
+            <Button
+              onClick={() =>
+                created &&
+                copyText(`الرابط: ${window.location.origin}\nاسم المستخدم: ${created.username}\nكلمة المرور: ${created.password}`)
+              }
+            >
+              <Copy />
+              نسخ بيانات الدخول
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

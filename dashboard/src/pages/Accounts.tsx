@@ -81,6 +81,7 @@ import { NotesButton, NotesThread } from "@/components/NotesThread"
 import { OwnerOptions, type OwnerGroup } from "@/components/OwnerOptions"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { daysSince, fullDate, relDays, relTime, toDate } from "@/lib/time"
 import { cn } from "@/lib/utils"
 
 // ---------- types (CONTRACT.md → Account tracking) ----------
@@ -166,27 +167,8 @@ const KIND: Record<string, { label: string; icon: LucideIcon; tone: string }> = 
   checked: { label: "فحص", icon: CheckCircle2, tone: "bg-success-light text-success" },
 }
 
-// SQLite datetime('now') → "YYYY-MM-DD HH:MM:SS" in UTC
-const toDate = (s: string) => new Date(/[TZ]/.test(s) ? s : s.replace(" ", "T") + "Z")
-const daysSince = (s: string) => Math.floor((Date.now() - toDate(s).getTime()) / 86400000)
 const isLate = (at: string | null) => !at || daysSince(at) > STALE_DAYS
 const needsAttention = (t: Tracked) => t.status !== "active" || isLate(t.last_checked_at)
-
-const relDays = (s: string) => {
-  const d = daysSince(s)
-  if (d <= 0) return "اليوم"
-  if (d === 1) return "أمس"
-  if (d === 2) return "منذ يومين"
-  return d <= 10 ? `منذ ${d} أيام` : `منذ ${d} يومًا`
-}
-const relTime = (s: string) => {
-  const m = Math.floor((Date.now() - toDate(s).getTime()) / 60000)
-  if (m < 1) return "الآن"
-  if (m < 60) return `منذ ${m} دقيقة`
-  const h = Math.floor(m / 60)
-  return h < 24 ? `منذ ${h} ساعة` : relDays(s)
-}
-const fullDate = (s: string) => toDate(s).toLocaleString("en-GB", { hour12: false })
 
 const fmt = (n: number | null | undefined) => (n == null ? "—" : n.toLocaleString("en-US"))
 const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : fmt(n))

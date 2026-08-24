@@ -11,6 +11,7 @@ import Groups from "@/pages/Groups"
 import Login from "@/pages/Login"
 import Notifications from "@/pages/Notifications"
 import Settings from "@/pages/Settings"
+import Profile from "@/pages/Profile"
 import Sims from "@/pages/Sims"
 import Tasks from "@/pages/Tasks"
 import Users from "@/pages/Users"
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route element={<Protected />}>
               <Route path="/" element={<Dashboard />} />
+              <Route path="/profile" element={<Profile />} />
               <Route path="/accounts" element={<Accounts />} />
               <Route path="/sims" element={<Sims />} />
               <Route path="/tasks" element={<Tasks />} />

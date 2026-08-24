@@ -4,13 +4,14 @@ const db = require('../db');
 const { sign, auth, requireRole } = require('../auth');
 
 const r = express.Router();
-const PUBLIC = 'id, username, name, role, group_id, active, created_at';
+const PUBLIC = 'id, username, name, role, group_id, active, last_seen_at, created_at';
 
 r.post('/login', (req, res) => {
   const { username, password } = req.body || {};
   const u = db.prepare('SELECT * FROM users WHERE username = ?').get(username || '');
   if (!u || !u.active || !bcrypt.compareSync(password || '', u.password_hash))
     return res.status(401).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
+  db.prepare(`UPDATE users SET last_seen_at = datetime('now') WHERE id = ?`).run(u.id);
   res.json({ token: sign(u), user: { id: u.id, username: u.username, name: u.name, role: u.role, group_id: u.group_id } });
 });
 
@@ -78,10 +79,13 @@ r.put('/users/:id', auth, (req, res) => {
   const adminScope = me.role === 'admin' && target.group_id === me.group_id && target.role === 'user';
   if (!(me.role === 'super' || self || adminScope)) return res.status(403).json({ error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' });
 
+  // self (non-super) can only change password here — profile fields go through /profile/requests
   const allowed = me.role === 'super' ? ['name', 'password', 'role', 'group_id', 'active']
-    : self ? ['name', 'password']
+    : self ? ['password']
     : ['name', 'password', 'active'];
   const b = req.body || {};
+  if (self && 'password' in b && !(b.current_password && bcrypt.compareSync(b.current_password, target.password_hash)))
+    return res.status(400).json({ error: 'كلمة المرور الحالية غير صحيحة' });
   if (b.role && !['super', 'admin', 'user'].includes(b.role)) return res.status(400).json({ error: 'الدور المحدد غير صالح' });
   const sets = [], args = [];
   for (const f of allowed) {

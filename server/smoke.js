@@ -145,6 +145,39 @@ function step(name, ok, detail) {
     && arx.status === 403 && ars.status === 400,
     JSON.stringify([are.data.owner_name, arx.data, ars.data]));
 
+  const mon = await call('GET', '/users', at);
+  step('users last_seen', mon.status === 200 && mon.data.every((u) => u.last_seen_at),
+    JSON.stringify(mon.data.map((u) => [u.username, u.last_seen_at])));
+
+  // ---- profile: self password change + change requests approve/decline ----
+  const pwBad = await call('PUT', `/users/${us.data.id}`, ut, { password: 'newpass99', current_password: 'wrong' });
+  const pwOk = await call('PUT', `/users/${us.data.id}`, ut, { password: 'newpass99', current_password: 'pass1234' });
+  const relog = await call('POST', '/login', null, { username: 'user1', password: 'newpass99' });
+  step('profile password change', pwBad.status === 400 && pwOk.status === 200 && relog.status === 200,
+    JSON.stringify([pwBad.data, pwOk.status, relog.status]));
+
+  const selfName = await call('PUT', `/users/${us.data.id}`, ut, { name: 'Hacked Direct' });
+  const meAfter = await call('GET', '/me', ut);
+  step('profile direct name blocked', selfName.status === 200 && meAfter.data.name === 'User One',
+    JSON.stringify(meAfter.data));
+
+  const rq1 = await call('POST', '/profile/requests', ut, { name: 'User One Prime' });
+  const rqDup = await call('POST', '/profile/requests', ut, { name: 'Another' });
+  step('profile request create', rq1.status === 200 && rq1.data.status === 'pending'
+    && rq1.data.changes.name.to === 'User One Prime' && rqDup.status === 400,
+    JSON.stringify([rq1.data, rqDup.data]));
+
+  const rqApprove = await call('PUT', `/profile/requests/${rq1.data.id}`, sup, { status: 'approved' });
+  const meApproved = await call('GET', '/me', ut);
+  const rq2 = await call('POST', '/profile/requests', ut, { username: 'user1x' });
+  const rqDecline = await call('PUT', `/profile/requests/${rq2.data.id}`, sup, { status: 'declined', note: 'غير مناسب' });
+  const hist = await call('GET', '/profile/requests', ut);
+  const nonSuper = await call('PUT', `/profile/requests/${rq2.data.id}`, at, { status: 'approved' });
+  step('profile request review+history', rqApprove.status === 200 && meApproved.data.name === 'User One Prime'
+    && rqDecline.status === 200 && rqDecline.data.status === 'declined' && rqDecline.data.note === 'غير مناسب'
+    && hist.status === 200 && hist.data.length === 2 && nonSuper.status === 403,
+    JSON.stringify([meApproved.data.name, rqDecline.data, hist.data.length, nonSuper.data]));
+
   const ex = await call('GET', '/export', at);
   step('export xlsx', ex.status === 200 && ex.ct.includes('spreadsheetml') && ex.data.subarray(0, 2).toString() === 'PK',
     `ct=${ex.ct} bytes=${ex.data.length}`);

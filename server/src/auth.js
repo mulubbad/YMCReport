@@ -6,10 +6,15 @@ const sign = (u) => jwt.sign({ id: u.id, role: u.role, group_id: u.group_id }, S
 
 const verify = (token) => jwt.verify(token, SECRET);
 
+// last-activity stamp, throttled to one write per user per minute
+let touch;
 function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   try {
     req.user = verify(token);
+    (touch ??= require('./db').prepare(
+      `UPDATE users SET last_seen_at = datetime('now') WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < datetime('now', '-60 seconds'))`,
+    )).run(req.user.id);
     next();
   } catch {
     res.status(401).json({ error: 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول من جديد' });
