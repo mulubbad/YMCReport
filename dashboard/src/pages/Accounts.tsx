@@ -961,6 +961,7 @@ export default function Accounts() {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-dashed">
+                      <TableHead className={cn(th, "w-10")}>#</TableHead>
                       <TableHead className={th}>الحساب</TableHead>
                       {isAdmin && <TableHead className={th}>المالك</TableHead>}
                       <TableHead className={th}>التواصل</TableHead>
@@ -972,8 +973,9 @@ export default function Accounts() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {rows.map((a) => (
+                    {rows.map((a, i) => (
                       <TableRow key={a.id} className="border-dashed transition-colors duration-150">
+                        <TableCell className="text-xs text-muted-foreground tabular-nums">{i + 1}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-3">
                             <Tile name={a.name} />

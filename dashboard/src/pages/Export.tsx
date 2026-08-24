@@ -164,6 +164,7 @@ function DataTable({ data, loading }: { data: Report | null; loading: boolean })
         <table className="w-full caption-bottom text-sm">
           <TableHeader className="sticky top-0 z-10 bg-card shadow-[inset_0_-1px_0_var(--border)]">
             <TableRow className="hover:bg-transparent">
+              <TableHead className="h-11 w-10 px-3">#</TableHead>
               {(loading && !columns.length ? Array.from({ length: 6 }, () => "") : columns).map((c, i) => {
                 const active = sort?.col === i
                 const Icon = active ? (sort.dir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown
@@ -197,7 +198,7 @@ function DataTable({ data, loading }: { data: Report | null; loading: boolean })
             {loading ? (
               Array.from({ length: 8 }, (_, r) => (
                 <TableRow key={r}>
-                  {Array.from({ length: columns.length || 6 }, (_, c) => (
+                  {Array.from({ length: (columns.length || 6) + 1 }, (_, c) => (
                     <TableCell key={c} className="h-11">
                       <Skeleton className="h-3 w-full" />
                     </TableCell>
@@ -206,7 +207,7 @@ function DataTable({ data, loading }: { data: Report | null; loading: boolean })
               ))
             ) : visible.length === 0 ? (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={columns.length || 1} className="py-12">
+                <TableCell colSpan={(columns.length || 1) + 1} className="py-12">
                   <div className="flex flex-col items-center gap-2 text-center">
                     <div className="flex size-11 items-center justify-center rounded-md bg-muted text-muted-foreground">
                       <Inbox className="size-5" />
@@ -218,6 +219,7 @@ function DataTable({ data, loading }: { data: Report | null; loading: boolean })
             ) : (
               visible.map((r, i) => (
                 <TableRow key={start + i}>
+                  <TableCell className="h-11 px-3 text-xs text-muted-foreground tabular-nums">{start + i + 1}</TableCell>
                   {r.map((c, j) => {
                     const t = text(c)
                     return (

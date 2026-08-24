@@ -581,7 +581,8 @@ function MembersTable({ members }: { members: MemberRow[] }) {
     <Table>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
-          <TableHead className="ps-4 sm:ps-6">العضو</TableHead>
+          <TableHead className="w-10 ps-4 sm:ps-6">#</TableHead>
+          <TableHead>العضو</TableHead>
           {COLS.map(([key, label]) => (
             <TableHead key={key} aria-sort={sort.key === key ? (sort.desc ? "descending" : "ascending") : "none"}>
               <button
@@ -597,9 +598,10 @@ function MembersTable({ members }: { members: MemberRow[] }) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {rows.map((m) => (
+        {rows.map((m, i) => (
           <TableRow key={m.id}>
-            <TableCell className="ps-4 sm:ps-6">
+            <TableCell className="ps-4 text-xs text-muted-foreground tabular-nums sm:ps-6">{i + 1}</TableCell>
+            <TableCell>
               <div className="flex items-center gap-3">
                 <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary-light text-xs font-semibold text-primary">{initials(m.name)}</div>
                 <div className="min-w-0">

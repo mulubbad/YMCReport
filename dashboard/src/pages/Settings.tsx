@@ -177,14 +177,16 @@ function TypesTab({ gid }: { gid: string }) {
             <Table>
               <TableHeader className={thClass}>
                 <TableRow>
+                  <TableHead className="w-10">#</TableHead>
                   <TableHead>الاسم</TableHead>
                   <TableHead>يسمح بالصفحات</TableHead>
                   <TableHead className="w-28" />
                 </TableRow>
               </TableHeader>
               <TableBody className={tdClass}>
-                {rows.map((t) => (
+                {rows.map((t, i) => (
                   <TableRow key={t.id} className="border-dashed">
+                    <TableCell className="text-xs text-muted-foreground tabular-nums">{i + 1}</TableCell>
                     <TableCell className="font-medium">{t.name}</TableCell>
                     <TableCell>{pages(t)}</TableCell>
                     <TableCell>
@@ -351,14 +353,16 @@ function SitesTab({ gid }: { gid: string }) {
             <Table>
               <TableHeader className={thClass}>
                 <TableRow>
+                  <TableHead className="w-10">#</TableHead>
                   <TableHead>الاسم</TableHead>
                   <TableHead>الرابط</TableHead>
                   <TableHead className="w-28" />
                 </TableRow>
               </TableHeader>
               <TableBody className={tdClass}>
-                {rows.map((s) => (
+                {rows.map((s, i) => (
                   <TableRow key={s.id} className="border-dashed">
+                    <TableCell className="text-xs text-muted-foreground tabular-nums">{i + 1}</TableCell>
                     <TableCell className="font-medium">{s.name}</TableCell>
                     <TableCell className="max-w-[16rem] text-sm">{link(s)}</TableCell>
                     <TableCell>

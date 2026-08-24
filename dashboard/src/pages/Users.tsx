@@ -322,6 +322,7 @@ export default function Users() {
                 <Table>
                   <TableHeader className="[&_th]:px-6 [&_th]:text-xs [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-wide [&_th]:text-muted-foreground">
                     <TableRow>
+                      <TableHead className="w-10">#</TableHead>
                       <TableHead>المستخدم</TableHead>
                       <TableHead>الدور</TableHead>
                       {isSuper && <TableHead>المجموعة</TableHead>}
@@ -331,8 +332,9 @@ export default function Users() {
                     </TableRow>
                   </TableHeader>
                   <TableBody className="[&_td]:px-6 [&_td]:py-3">
-                    {visible.map((u) => (
+                    {visible.map((u, i) => (
                       <TableRow key={u.id} className="border-dashed">
+                        <TableCell className="text-xs text-muted-foreground tabular-nums">{i + 1}</TableCell>
                         <TableCell>{identity(u)}</TableCell>
                         <TableCell>
                           <Badge variant={roleVariant[u.role]}>{roleLabel[u.role]}</Badge>

@@ -155,14 +155,16 @@ export default function Groups() {
                 <Table>
                   <TableHeader className="[&_th]:px-6 [&_th]:text-xs [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-wide [&_th]:text-muted-foreground">
                     <TableRow>
+                      <TableHead className="w-10">#</TableHead>
                       <TableHead>الاسم</TableHead>
                       <TableHead>المستخدمون</TableHead>
                       <TableHead className="w-28" />
                     </TableRow>
                   </TableHeader>
                   <TableBody className="[&_td]:px-6 [&_td]:py-3">
-                    {rows.map((g) => (
+                    {rows.map((g, i) => (
                       <TableRow key={g.id} className="border-dashed">
+                        <TableCell className="text-xs text-muted-foreground tabular-nums">{i + 1}</TableCell>
                         <TableCell>{identity(g)}</TableCell>
                         <TableCell>{countBadge(g)}</TableCell>
                         <TableCell>

@@ -339,6 +339,7 @@ export default function Sims() {
                 <Table>
                   <TableHeader className="[&_th]:px-6 [&_th]:text-xs [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-wide [&_th]:text-muted-foreground">
                     <TableRow>
+                      <TableHead className="w-10">#</TableHead>
                       <TableHead>الرقم</TableHead>
                       <TableHead>الشركة</TableHead>
                       <TableHead>الحالة</TableHead>
@@ -350,8 +351,9 @@ export default function Sims() {
                     </TableRow>
                   </TableHeader>
                   <TableBody className="[&_td]:px-6 [&_td]:py-3">
-                    {visible.map((r) => (
+                    {visible.map((r, i) => (
                       <TableRow key={r.id} className="border-dashed">
+                        <TableCell className="text-xs text-muted-foreground tabular-nums">{i + 1}</TableCell>
                         <TableCell className="whitespace-nowrap">{numberCell(r)}</TableCell>
                         <TableCell className="whitespace-nowrap">{carrierCell(r)}</TableCell>
                         <TableCell>{statusCell(r)}</TableCell>
