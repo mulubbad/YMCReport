@@ -78,6 +78,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { NotesButton, NotesThread } from "@/components/NotesThread"
+import { OwnerOptions, type OwnerGroup } from "@/components/OwnerOptions"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { cn } from "@/lib/utils"
@@ -425,6 +426,7 @@ export default function Accounts() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
   const [users, setUsers] = useState<UserRow[]>([])
+  const [groups, setGroups] = useState<OwnerGroup[]>([])
   const [filterUser, setFilterUser] = useState("all")
   const [q, setQ] = useState("")
   const [filterType, setFilterType] = useState("all")
@@ -468,7 +470,10 @@ export default function Accounts() {
 
   useEffect(() => {
     if (isAdmin) api.get("/users").then(setUsers).catch((e) => toast.error(e.message))
-  }, [isAdmin])
+    if (me.role === "super") api.get("/groups").then(setGroups).catch((e) => toast.error(e.message))
+  }, [isAdmin, me.role])
+
+  const ownerOptions = <OwnerOptions users={users} groups={groups} meId={me.id} />
 
   // owner's SIM lines → <datalist> for the mobile input (CONTRACT.md → SIM lines)
   useEffect(() => {
@@ -871,11 +876,7 @@ export default function Accounts() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">جميع المستخدمين</SelectItem>
-                  {users.map((u) => (
-                    <SelectItem key={u.id} value={String(u.id)}>
-                      {u.name}
-                    </SelectItem>
-                  ))}
+                  {ownerOptions}
                 </SelectContent>
               </Select>
             )}
@@ -1098,16 +1099,10 @@ export default function Accounts() {
               <div className="grid gap-1.5">
                 <Label>المالك</Label>
                 <Select value={form.user_id} onValueChange={setOwner}>
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger className="w-full" aria-label="مالك الحساب">
                     <SelectValue placeholder="اختر المالك" />
                   </SelectTrigger>
-                  <SelectContent>
-                    {users.map((u) => (
-                      <SelectItem key={u.id} value={String(u.id)}>
-                        {u.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
+                  <SelectContent>{ownerOptions}</SelectContent>
                 </Select>
               </div>
             )}

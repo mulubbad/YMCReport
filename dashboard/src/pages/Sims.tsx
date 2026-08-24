@@ -46,6 +46,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { OwnerOptions, type OwnerGroup, type OwnerUser } from "@/components/OwnerOptions"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
@@ -75,7 +76,6 @@ type Sim = {
   note_count?: number
   created_at: string
 }
-type UserRow = { id: number; name: string }
 
 // same normalization as the server: strip spaces/dashes/parens, +970/00970/970/+972/00972/972 → 0
 const normalize = (raw: string) => raw.replace(/[\s\-()]/g, "").replace(/^(\+|00)?97[02]/, "0")
@@ -122,7 +122,8 @@ export default function Sims() {
   const isAdmin = me.role !== "user"
 
   const [rows, setRows] = useState<Sim[] | null>(null)
-  const [users, setUsers] = useState<UserRow[]>([])
+  const [users, setUsers] = useState<OwnerUser[]>([])
+  const [groups, setGroups] = useState<OwnerGroup[]>([])
   const [filterUser, setFilterUser] = useState("all")
   const [q, setQ] = useState("")
   const [chip, setChip] = useState("all")
@@ -145,7 +146,10 @@ export default function Sims() {
 
   useEffect(() => {
     if (isAdmin) api.get("/users").then(setUsers).catch((e) => toast.error(e.message))
-  }, [isAdmin])
+    if (me.role === "super") api.get("/groups").then(setGroups).catch((e) => toast.error(e.message))
+  }, [isAdmin, me.role])
+
+  const ownerOptions = <OwnerOptions users={users} groups={groups} meId={me.id} />
 
   const s = q.trim().toLowerCase()
   const chipMatch = CHIPS.find((c) => c.key === chip)!.match
@@ -277,9 +281,7 @@ export default function Sims() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">كل المالكين</SelectItem>
-                    {users.map((u) => (
-                      <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
-                    ))}
+                    {ownerOptions}
                   </SelectContent>
                 </Select>
               )}
@@ -411,14 +413,10 @@ export default function Sims() {
               <div className="space-y-2">
                 <Label>المالك</Label>
                 <Select value={form.user_id} onValueChange={(v) => setForm({ ...form, user_id: v })}>
-                  <SelectTrigger className="h-11 w-full">
+                  <SelectTrigger className="h-11 w-full" aria-label="مالك الخط">
                     <SelectValue placeholder="اختر المالك" />
                   </SelectTrigger>
-                  <SelectContent>
-                    {users.map((u) => (
-                      <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
-                    ))}
-                  </SelectContent>
+                  <SelectContent>{ownerOptions}</SelectContent>
                 </Select>
               </div>
             )}

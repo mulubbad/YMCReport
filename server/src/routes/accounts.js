@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { auth, requireRole } = require('../auth');
+const { auth, requireRole, resolveOwner } = require('../auth');
 const { notify, groupAdmins, day } = require('../notify');
 
 const r = express.Router();
@@ -127,14 +127,8 @@ r.get('/accounts', (req, res) => {
 r.post('/accounts', (req, res) => {
   const b = req.body || {};
   const me = req.user;
-  let owner = db.prepare('SELECT id, group_id FROM users WHERE id = ?').get(me.id);
-  if (b.user_id && b.user_id !== me.id) {
-    if (me.role === 'user') return res.status(403).json(FORBIDDEN);
-    const target = db.prepare('SELECT id, group_id FROM users WHERE id = ?').get(b.user_id);
-    if (!target) return res.status(404).json({ error: 'المستخدم غير موجود' });
-    if (me.role === 'admin' && target.group_id !== me.group_id) return res.status(403).json(FORBIDDEN);
-    owner = target;
-  }
+  const owner = b.user_id ? resolveOwner(me, b.user_id, res) : { id: me.id, group_id: me.group_id };
+  if (!owner) return;
   if (!b.name || !b.type_id) return res.status(400).json({ error: 'الاسم ونوع الحساب حقلان مطلوبان' });
   if (!b.mobile && !b.email) return res.status(400).json({ error: 'يجب إدخال رقم الجوال أو البريد الإلكتروني' });
   const err = trackError(b);
@@ -155,16 +149,22 @@ r.put('/accounts/:id', (req, res) => {
   if (!acc) return res.status(404).json({ error: 'الحساب غير موجود' });
   if (!canAccess(req.user, acc)) return res.status(403).json(FORBIDDEN);
   const b = req.body || {};
+  const owner = b.user_id ? resolveOwner(req.user, b.user_id, res) : { id: acc.user_id, group_id: acc.owner_group };
+  if (!owner) return;
   const err = trackError(b);
   if (err) return res.status(400).json({ error: err });
   const v = merge(FIELDS, acc, b);
   if (!v.mobile && !v.email) return res.status(400).json({ error: 'يجب إدخال رقم الجوال أو البريد الإلكتروني' });
-  if (v.type_id !== acc.type_id) {
+  if (v.type_id !== acc.type_id || owner.group_id !== acc.owner_group) {
     const type = db.prepare('SELECT * FROM account_types WHERE id = ?').get(v.type_id);
-    if (!type || type.group_id !== acc.owner_group) return res.status(400).json({ error: 'نوع الحساب لا يتبع مجموعة مالك الحساب' });
+    if (!type || type.group_id !== owner.group_id) return res.status(400).json({ error: 'نوع الحساب لا يتبع مجموعة مالك الحساب' });
   }
-  db.prepare(`UPDATE accounts SET ${FIELDS.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`)
-    .run(...FIELDS.map((f) => v[f]), acc.id);
+  db.prepare(`UPDATE accounts SET user_id = ?, ${FIELDS.map((f) => `${f} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`)
+    .run(owner.id, ...FIELDS.map((f) => v[f]), acc.id);
+  if (owner.id !== acc.user_id) {
+    const name = db.prepare('SELECT name FROM users WHERE id = ?').get(owner.id).name;
+    logEvent({ account_id: acc.id, user_id: req.user.id, kind: 'updated', summary: `نقل ملكية الحساب من «${acc.owner_name}» إلى «${name}»` });
+  }
   logDiff({ account_id: acc.id, user_id: req.user.id, before: acc, after: v, fields: FIELDS });
   res.json(getAccount(acc.id));
 });

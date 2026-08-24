@@ -97,6 +97,54 @@ function step(name, ok, detail) {
     && msg.status === 200 && self.status === 400 && kinds.includes('task_nudge') && kinds.includes('message'),
     JSON.stringify([nd.data, nd2.data, self.data, kinds]));
 
+  // ---- sims: role-based owner assignment + group-scoped listing ----
+  const sm1 = await call('POST', '/sims', ut, { number: '0591111111' });
+  const smf = await call('POST', '/sims', ut, { number: '0562222222', user_id: us2.data.id });
+  step('sims user self-only', sm1.status === 200 && sm1.data.owner_name === 'User One' && smf.status === 403,
+    JSON.stringify([sm1.data, smf.data]));
+
+  const sm2 = await call('POST', '/sims', at, { number: '0562222222', user_id: us2.data.id });
+  const gB = await call('POST', '/groups', sup, { name: 'Beta' });
+  const ub = await call('POST', '/users', sup, { username: 'userb', password: 'pass1234', name: 'User Beta', role: 'user', group_id: gB.data.id });
+  const smx = await call('POST', '/sims', at, { number: '0593333333', user_id: ub.data.id });
+  const sms = await call('POST', '/sims', sup, { number: '0594444444', user_id: ub.data.id });
+  step('sims owner assignment', sm2.status === 200 && sm2.data.owner_name === 'User Two' && smx.status === 403
+    && sms.status === 200 && sms.data.owner_name === 'User Beta',
+    JSON.stringify([sm2.data, smx.data, sms.data]));
+
+  const la = await call('GET', '/sims', at);
+  const lf = await call('GET', `/sims?user_id=${us2.data.id}`, at);
+  const lu = await call('GET', '/sims', ut);
+  step('sims group listing+filter', la.status === 200 && la.data.length === 2
+    && lf.status === 200 && lf.data.length === 1 && lf.data[0].owner_name === 'User Two'
+    && lu.status === 200 && lu.data.length === 1,
+    JSON.stringify([la.data.length, lf.data.length, lu.data.length]));
+
+  const rea = await call('PUT', `/sims/${sm1.data.id}`, at, { user_id: us2.data.id });
+  const reb = await call('PUT', `/sims/${sm2.data.id}`, at, { user_id: ub.data.id });
+  step('sims owner reassign', rea.status === 200 && rea.data.user_id === us2.data.id && reb.status === 403,
+    JSON.stringify([rea.data, reb.data]));
+
+  // ---- accounts: same owner scenario ----
+  const ac2 = await call('POST', '/accounts', at, { type_id: ty.data.id, name: 'FB Two', mobile: '0591111111', user_id: us2.data.id });
+  const acf = await call('POST', '/accounts', ut, { type_id: ty.data.id, name: 'FB Bad', mobile: '0592222222', user_id: us2.data.id });
+  const acx = await call('POST', '/accounts', at, { type_id: ty.data.id, name: 'FB Cross', mobile: '0593333333', user_id: ub.data.id });
+  step('accounts owner assignment', ac2.status === 200 && ac2.data.owner_name === 'User Two' && acf.status === 403 && acx.status === 403,
+    JSON.stringify([ac2.data.owner_name, acf.data, acx.data]));
+
+  const alist = await call('GET', '/accounts', at);
+  const aflt = await call('GET', `/accounts?user_id=${us2.data.id}`, at);
+  step('accounts group listing+filter', alist.status === 200 && alist.data.length === 2
+    && aflt.status === 200 && aflt.data.length === 1 && aflt.data[0].owner_name === 'User Two',
+    JSON.stringify([alist.data.length, aflt.data.length]));
+
+  const are = await call('PUT', `/accounts/${acc.data.id}`, at, { user_id: us2.data.id });
+  const arx = await call('PUT', `/accounts/${acc.data.id}`, at, { user_id: ub.data.id });
+  const ars = await call('PUT', `/accounts/${acc.data.id}`, sup, { user_id: ub.data.id }); // type stays in Alpha -> 400
+  step('accounts owner reassign', are.status === 200 && are.data.user_id === us2.data.id && are.data.owner_name === 'User Two'
+    && arx.status === 403 && ars.status === 400,
+    JSON.stringify([are.data.owner_name, arx.data, ars.data]));
+
   const ex = await call('GET', '/export', at);
   step('export xlsx', ex.status === 200 && ex.ct.includes('spreadsheetml') && ex.data.subarray(0, 2).toString() === 'PK',
     `ct=${ex.ct} bytes=${ex.data.length}`);

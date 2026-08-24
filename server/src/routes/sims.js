@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { auth } = require('../auth');
+const { auth, resolveOwner } = require('../auth');
 
 const r = express.Router();
 r.use(auth);
@@ -78,14 +78,8 @@ r.get('/sims', (req, res) => {
 r.post('/sims', (req, res) => {
   const b = req.body || {};
   const me = req.user;
-  let userId = me.id;
-  if (b.user_id && b.user_id !== me.id) {
-    if (me.role === 'user') return res.status(403).json(FORBIDDEN);
-    const target = db.prepare('SELECT id, group_id FROM users WHERE id = ?').get(b.user_id);
-    if (!target) return res.status(404).json({ error: 'المستخدم غير موجود' });
-    if (me.role === 'admin' && target.group_id !== me.group_id) return res.status(403).json(FORBIDDEN);
-    userId = target.id;
-  }
+  const userId = b.user_id ? resolveOwner(me, b.user_id, res)?.id : me.id;
+  if (userId == null) return;
   const v = build(b, {});
   if (typeof v === 'string') return res.status(400).json({ error: v });
   const id = unique(res, () => db.prepare('INSERT INTO sim_lines (user_id, number, carrier, status, holder_name, notes) VALUES (?,?,?,?,?,?)')
@@ -97,10 +91,13 @@ r.put('/sims/:id', (req, res) => {
   const sim = getSim(req.params.id);
   if (!sim) return res.status(404).json(NOT_FOUND);
   if (!canAccess(req.user, sim)) return res.status(403).json(FORBIDDEN);
-  const v = build(req.body || {}, sim);
+  const b = req.body || {};
+  const userId = b.user_id ? resolveOwner(req.user, b.user_id, res)?.id : sim.user_id;
+  if (userId == null) return;
+  const v = build(b, sim);
   if (typeof v === 'string') return res.status(400).json({ error: v });
-  const ok = unique(res, () => db.prepare(`UPDATE sim_lines SET number = ?, carrier = ?, status = ?, holder_name = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
-    .run(v.number, v.carrier, v.status, v.holder_name, v.notes, sim.id));
+  const ok = unique(res, () => db.prepare(`UPDATE sim_lines SET user_id = ?, number = ?, carrier = ?, status = ?, holder_name = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
+    .run(userId, v.number, v.carrier, v.status, v.holder_name, v.notes, sim.id));
   if (ok) res.json(withLinked(req.user, {}, [getSim(sim.id)])[0]);
 });
 
