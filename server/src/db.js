@@ -88,6 +88,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   category TEXT,
   priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high')),
   due_date TEXT,
+  repeat TEXT,
+  repeat_from TEXT,
+  repeat_until TEXT,
   archived INTEGER NOT NULL DEFAULT 0,
   created_by INTEGER REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')));
@@ -105,8 +108,9 @@ CREATE TABLE IF NOT EXISTS interactions (
   done INTEGER NOT NULL DEFAULT 0,
   notes TEXT,
   actions_done TEXT,
+  day TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT (datetime('now')));
-CREATE UNIQUE INDEX IF NOT EXISTS ux_interaction ON interactions(task_id, user_id, COALESCE(subtask_id, 0));
+CREATE UNIQUE INDEX IF NOT EXISTS ux_interaction ON interactions(task_id, user_id, COALESCE(subtask_id, 0), day);
 CREATE TABLE IF NOT EXISTS notifications ${NOTIF_DDL};
 CREATE INDEX IF NOT EXISTS ix_notifications ON notifications(user_id, id);
 CREATE TABLE IF NOT EXISTS sim_lines (
@@ -169,7 +173,17 @@ for (const [col, ddl] of Object.entries({
   priority: "priority TEXT NOT NULL DEFAULT 'normal'",
   due_date: 'due_date TEXT',
   archived: 'archived INTEGER NOT NULL DEFAULT 0',
+  repeat: 'repeat TEXT',
+  repeat_from: 'repeat_from TEXT',
+  repeat_until: 'repeat_until TEXT',
 })) if (!taskCols.has(col)) db.exec(`ALTER TABLE tasks ADD COLUMN ${ddl}`);
+
+// daily tasks: completions are day-scoped ('' = one-off task) — add the column and widen the unique index
+if (!db.prepare('PRAGMA table_info(interactions)').all().some((c) => c.name === 'day'))
+  db.exec("ALTER TABLE interactions ADD COLUMN day TEXT NOT NULL DEFAULT ''");
+const ixSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'ux_interaction'").get()?.sql ?? '';
+if (ixSql && !ixSql.includes('day'))
+  db.exec('DROP INDEX ux_interaction; CREATE UNIQUE INDEX ux_interaction ON interactions(task_id, user_id, COALESCE(subtask_id, 0), day);');
 
 for (const [table, col] of [['subtasks', 'actions'], ['interactions', 'actions_done'], ['users', 'last_seen_at']])
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col))

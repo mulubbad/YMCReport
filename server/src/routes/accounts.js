@@ -14,7 +14,7 @@ const EVENT_AR = {
 };
 const LABEL_AR = {
   type_id: 'نوع الحساب', site_id: 'الموقع', name: 'الاسم', mobile: 'رقم الجوال', email: 'البريد الإلكتروني',
-  password: 'كلمة المرور', link: 'الرابط', profile_address: 'عنوان الملف الشخصي', profile_work: 'عمل الملف الشخصي',
+  password: 'كلمة المرور', link: 'الرابط', profile_address: 'المنطقة الجغرافية للحساب', profile_work: 'طبيعة عمل صاحب الحساب',
   notes: 'ملاحظات', url: 'الرابط', address: 'العنوان', work: 'العمل', note: 'ملاحظات',
   status: 'الحالة', followers: 'المتابعون', posts_count: 'عدد المنشورات',
 };

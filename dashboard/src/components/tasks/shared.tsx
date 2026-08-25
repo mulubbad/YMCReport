@@ -17,6 +17,9 @@ export type Task = {
   category: string | null
   priority: Priority
   due_date: string | null
+  repeat: "daily" | null
+  repeat_from: string | null
+  repeat_until: string | null
   archived: number
   created_at: string
   created_by_name: string | null
@@ -24,6 +27,8 @@ export type Task = {
   subtasks: Subtask[]
   progress: { done: number; total: number }
   done_ids: number[]
+  repeat_active: 0 | 1
+  my_streak: number
   mine?: Mine
 }
 export type Person = { id: number; name: string }

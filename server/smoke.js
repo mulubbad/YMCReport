@@ -63,8 +63,10 @@ function step(name, ok, detail) {
 
   const tl = await call('GET', '/tasks', ut);
   const t0 = tl.status === 200 && tl.data[0];
-  step('task list progress+mine', !!t0 && t0.progress.done === 1 && t0.progress.total === 1 && t0.subtasks[0].mine.done === 1,
-    JSON.stringify(tl.data));
+  const tla = await call('GET', '/tasks', at);
+  step('task list progress+mine', !!t0 && t0.progress.total === 0 && t0.done_ids.length === 0 && t0.subtasks[0].mine.done === 1
+    && tla.data[0].progress.done === 1 && tla.data[0].progress.total === 1 && tla.data[0].done_ids.length === 1,
+    JSON.stringify([tl.data, tla.data[0].progress]));
 
   const ints = await call('GET', `/tasks/${tk.data.id}/interactions`, at);
   step('admin reads interactions', ints.status === 200 && ints.data.length === 2 && ints.data.every((x) => x.user_name && x.subtask_title),
@@ -78,10 +80,12 @@ function step(name, ok, detail) {
   const cm = await call('POST', `/tasks/${tk.data.id}/comments`, ut, { body: 'تم، @Admin One راجع الرابط' });
   const cl = await call('GET', `/tasks/${tk.data.id}/comments`, at);
   const tm = await call('GET', '/tasks/team', ut);
+  const tma = await call('GET', '/tasks/team', at);
   const cd = await call('DELETE', `/comments/${cm.data.id}`, at);
   const bad = await call('POST', `/tasks/${tk.data.id}/comments`, ut, { body: '   ' });
   step('comments+team', cm.status === 200 && cm.data.user_name === 'User One' && cl.status === 200 && cl.data.length === 1
-    && tm.status === 200 && tm.data.group.name === 'Alpha' && tm.data.members[0].done === 1 && tm.data.admins.length === 1
+    && tm.status === 200 && tm.data.group.name === 'Alpha' && tm.data.members[0].done === 0 && tm.data.members[0].total === 0
+    && tma.data.members[0].done === 1 && tm.data.admins.length === 1
     && cd.status === 200 && bad.status === 400,
     JSON.stringify([cm.data, tm.data, bad.data]));
 
@@ -177,6 +181,21 @@ function step(name, ok, detail) {
     && rqDecline.status === 200 && rqDecline.data.status === 'declined' && rqDecline.data.note === 'غير مناسب'
     && hist.status === 200 && hist.data.length === 2 && nonSuper.status === 403,
     JSON.stringify([meApproved.data.name, rqDecline.data, hist.data.length, nonSuper.data]));
+
+  const dt = await call('POST', '/tasks', at, { kind: 'general', title: 'Daily standup', repeat: 'daily' });
+  const di = await call('PUT', `/tasks/${dt.data.id}/interactions`, ut, { done: true });
+  const dl = await call('GET', '/tasks', ut);
+  const drow = dl.data.find((x) => x.id === dt.data.id);
+  const dla = await call('GET', '/tasks', at);
+  const drowA = dla.data.find((x) => x.id === dt.data.id);
+  const yesterday = new Date(Date.now() - 864e5).toLocaleDateString('en-CA');
+  const xt = await call('POST', '/tasks', at, { kind: 'general', title: 'Expired daily', repeat: 'daily', repeat_until: yesterday });
+  const xi = await call('PUT', `/tasks/${xt.data.id}/interactions`, ut, { done: true });
+  const badRep = await call('POST', '/tasks', at, { kind: 'general', title: 'Bad', repeat: 'daily', repeat_from: '2026-09-02', repeat_until: '2026-09-01' });
+  step('daily task', dt.status === 200 && dt.data.repeat === 'daily' && dt.data.repeat_active === 1 && dt.data.due_date == null
+    && di.status === 200 && drow && drow.mine.done === 1 && drow.my_streak === 1 && drow.progress.total === 0 && drowA.progress.done === 1
+    && xt.data.repeat_active === 0 && xi.status === 400 && badRep.status === 400,
+    JSON.stringify([dt.data.repeat, dt.data.repeat_active, drow && [drow.mine.done, drow.my_streak], xi.data, badRep.data]));
 
   const ex = await call('GET', '/export', at);
   step('export xlsx', ex.status === 200 && ex.ct.includes('spreadsheetml') && ex.data.subarray(0, 2).toString() === 'PK',

@@ -8,6 +8,8 @@ import {
   Kanban,
   LayoutGrid,
   MessageSquare,
+  Repeat,
+  Flame,
   Maximize2,
   MoreHorizontal,
   Pencil,
@@ -26,6 +28,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -111,7 +114,6 @@ function TaskCard({
   t,
   ro,
   isAdmin,
-  meId,
   today,
   members,
   onOpen,
@@ -124,7 +126,6 @@ function TaskCard({
   t: Task
   ro: boolean
   isAdmin: boolean
-  meId: number
   today: string
   members: Member[]
   onOpen: (t: Task) => void
@@ -147,6 +148,8 @@ function TaskCard({
   const lane = laneOf(complete, started, d)
   const chip = due && !complete ? dueChip(d!, due) : null
   const kind = KINDS[t.kind]
+  const daily = t.repeat === "daily"
+  const dailyOff = daily && !t.repeat_active
 
   return (
     <Card className={cn(CARD, "gap-0 border-s-4 py-0 transition-colors duration-200", EDGE[lane], ro && "bg-muted/30 opacity-75")}>
@@ -181,6 +184,24 @@ function TaskCard({
               </Badge>
             )}
             {t.priority === "low" && <span>· {PRIORITIES.low.label}</span>}
+            {daily && (
+              <span className={cn("inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 font-semibold", dailyOff ? "bg-muted text-muted-foreground" : "bg-info-light text-info")}>
+                <Repeat className="size-3" aria-hidden />
+                {dailyOff
+                  ? t.repeat_from && t.repeat_from.slice(0, 10) > today
+                    ? `تبدأ ${t.repeat_from.slice(0, 10)}`
+                    : "انتهت"
+                  : t.repeat_until
+                    ? `يومية حتى ${t.repeat_until.slice(0, 10)}`
+                    : "يومية"}
+              </span>
+            )}
+            {daily && !isAdmin && t.my_streak >= 2 && (
+              <span className="inline-flex items-center gap-0.5 font-semibold text-warning" title="أيام إنجاز متتالية">
+                <Flame className="size-3" aria-hidden />
+                {t.my_streak}
+              </span>
+            )}
             {chip && (
               <span className={cn("inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 font-semibold", chip.cls)}>
                 <chip.Icon className="size-3" aria-hidden />
@@ -201,17 +222,22 @@ function TaskCard({
 
       {/* tracking row: who's done · my status · discussion · admin menu */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-dashed px-3 py-1.5 sm:px-4">
-        {members.length > 0 ? (
-          <MemberStack members={members} doneIds={t.done_ids} meId={isAdmin ? undefined : meId} onClick={isAdmin ? () => onResponses(t) : undefined} />
-        ) : (
-          isAdmin && <ProgressRing done={t.progress.done} total={t.progress.total} size={32} />
+        {isAdmin &&
+          (members.length > 0 ? (
+            <MemberStack members={members} doneIds={t.done_ids} onClick={() => onResponses(t)} />
+          ) : (
+            <ProgressRing done={t.progress.done} total={t.progress.total} size={32} />
+          ))}
+        {isAdmin && (
+          <span className="text-xs tabular-nums text-muted-foreground" aria-hidden={members.length > 0}>
+            {t.progress.done}/{t.progress.total} أنجزوا
+          </span>
         )}
-        <span className="text-xs tabular-nums text-muted-foreground" aria-hidden={members.length > 0}>
-          {t.progress.done}/{t.progress.total} أنجزوا
-        </span>
         {!isAdmin &&
           (ro ? (
             <span className={cn("text-xs font-semibold", complete ? "text-success" : "text-muted-foreground")}>{complete ? "أنجزتها" : "لم تنجزها"}</span>
+          ) : dailyOff ? (
+            <span className="text-xs font-semibold text-muted-foreground">غير نشطة اليوم</span>
           ) : hasSubs ? (
             <button
               type="button"
@@ -231,7 +257,7 @@ function TaskCard({
           ) : (
             <label className="flex min-h-9 cursor-pointer items-center gap-2 text-xs font-semibold">
               <Checkbox className={CHECK_CLS} checked={mine.done} onCheckedChange={(v) => mine.toggle(v === true)} />
-              {mine.done ? <span className="text-success">أنجزتها</span> : "أنجزتها؟"}
+              {mine.done ? <span className="text-success">{daily ? "أنجزتها اليوم" : "أنجزتها"}</span> : daily ? "أنجزتها اليوم؟" : "أنجزتها؟"}
             </label>
           ))}
         <div className="ms-auto flex items-center">
@@ -297,6 +323,9 @@ type Form = {
   category: string
   priority: Priority
   due_date: string
+  repeat: boolean
+  repeat_from: string
+  repeat_until: string
   subs: SubForm[]
 }
 
@@ -402,6 +431,8 @@ export default function Tasks() {
         ? t.subtasks.every((s) => !!s.mine?.done)
         : !!t.mine?.done
   const isStarted = (t: Task) => (isAdmin ? t.progress.done > 0 : t.subtasks.some((s) => !!s.mine?.done) || !!t.mine?.done)
+  // active daily tasks sort like "due today" so they surface every morning
+  const sortDue = (t: Task) => (t.repeat === "daily" ? (t.repeat_active ? today : "9999") : (t.due_date?.slice(0, 10) ?? "9999"))
   const statusOf = (t: Task): Lane => laneOf(isCompleted(t), isStarted(t), t.due_date ? dayDiff(t.due_date.slice(0, 10), today) : null)
 
   const list = tab === "active" ? tasks : archivedTasks
@@ -426,8 +457,8 @@ export default function Tasks() {
           const ao = statusOf(a) === "overdue" ? 0 : 1
           const bo = statusOf(b) === "overdue" ? 0 : 1
           if (ao !== bo) return ao - bo
-          const ad = a.due_date?.slice(0, 10) ?? "9999"
-          const bd = b.due_date?.slice(0, 10) ?? "9999"
+          const ad = sortDue(a)
+          const bd = sortDue(b)
           if (ad !== bd) return ad < bd ? -1 : 1
           return (b.created_at ?? "").localeCompare(a.created_at ?? "") || b.id - a.id
         })
@@ -453,6 +484,9 @@ export default function Tasks() {
       category: t.category ?? "",
       priority: t.priority ?? "normal",
       due_date: t.due_date ? t.due_date.slice(0, 10) : "",
+      repeat: t.repeat === "daily",
+      repeat_from: t.repeat_from ? t.repeat_from.slice(0, 10) : "",
+      repeat_until: t.repeat_until ? t.repeat_until.slice(0, 10) : "",
       subs: t.subtasks.map((s) => ({ id: s.id, title: s.title, url: s.url ?? "", actions: (s.actions ?? []) as Action[] })),
     })
 
@@ -470,7 +504,10 @@ export default function Tasks() {
       post_count: needsType && form.post_count ? Number(form.post_count) : null,
       category: form.category.trim() || null,
       priority: form.priority,
-      due_date: form.due_date || null,
+      due_date: form.repeat ? null : form.due_date || null,
+      repeat: form.repeat ? "daily" : null,
+      repeat_from: (form.repeat && form.repeat_from) || null,
+      repeat_until: (form.repeat && form.repeat_until) || null,
       subtasks: form.subs
         .filter((s) => s.title.trim())
         .map((s) => ({
@@ -590,7 +627,6 @@ export default function Tasks() {
       t={t}
       ro={ro}
       isAdmin={isAdmin}
-      meId={user!.id}
       today={today}
       members={teamOf(t.group_id)?.members ?? []}
       onOpen={setDetail}
@@ -669,6 +705,9 @@ export default function Tasks() {
                   category: "",
                   priority: "normal",
                   due_date: "",
+                  repeat: false,
+                  repeat_from: "",
+                  repeat_until: "",
                   subs: [],
                 })
               }
@@ -680,7 +719,8 @@ export default function Tasks() {
         )}
       </div>
 
-      {tab === "active" && (
+      {/* leaderboard shows peers' progress → group-admin permission */}
+      {tab === "active" && isAdmin && (
         <TeamPulse team={team} meId={user!.id} isAdmin={isAdmin} tasks={tasks ?? []} today={today} isCompleted={isCompleted} />
       )}
 
@@ -928,13 +968,49 @@ export default function Tasks() {
                   ))}
                 </datalist>
               </div>
-              <div className="space-y-1.5">
-                <Label>تاريخ الاستحقاق</Label>
-                <Input
-                  type="date"
-                  value={form.due_date}
-                  onChange={(e) => setForm({ ...form, due_date: e.target.value })}
-                />
+              {!form.repeat && (
+                <div className="space-y-1.5">
+                  <Label>تاريخ الاستحقاق</Label>
+                  <Input
+                    type="date"
+                    value={form.due_date}
+                    onChange={(e) => setForm({ ...form, due_date: e.target.value })}
+                  />
+                </div>
+              )}
+              <div className="space-y-2 rounded-md border p-3 sm:col-span-2">
+                <label className="flex cursor-pointer items-center justify-between gap-3">
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    <Repeat className="size-4 text-info" aria-hidden />
+                    مهمة يومية متكررة
+                  </span>
+                  <Switch checked={form.repeat} onCheckedChange={(v) => setForm({ ...form, repeat: v === true })} />
+                </label>
+                {form.repeat && (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      تتجدد كل يوم ويعيد الأعضاء إنجازها من جديد. اترك التاريخين فارغين لتكون دائمة.
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <Label>من (اختياري)</Label>
+                        <Input
+                          type="date"
+                          value={form.repeat_from}
+                          onChange={(e) => setForm({ ...form, repeat_from: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>حتى (اختياري)</Label>
+                        <Input
+                          type="date"
+                          value={form.repeat_until}
+                          onChange={(e) => setForm({ ...form, repeat_until: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
               {needsType && (
                 <>

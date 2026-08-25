@@ -675,7 +675,8 @@ export default function Accounts() {
     if (!quick) return
     const body: Record<string, unknown> = {}
     if (quickForm.followers.trim() !== "") body.followers = Number(quickForm.followers)
-    if (quickForm.posts_count.trim() !== "") body.posts_count = Number(quickForm.posts_count)
+    // the field holds NEW posts since the last check — the server stores the running total
+    if (quickForm.posts_count.trim() !== "") body.posts_count = (quick.cur.posts_count ?? 0) + Number(quickForm.posts_count)
     if (quickForm.status !== quick.cur.status) body.status = quickForm.status
     if (quickForm.note.trim()) body.note = quickForm.note.trim()
     setSaving(true)
@@ -1164,11 +1165,11 @@ export default function Accounts() {
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
-                <Label>عنوان الملف الشخصي</Label>
+                <Label>المنطقة الجغرافية للحساب</Label>
                 <Input {...field("profile_address")} />
               </div>
               <div className="grid gap-1.5">
-                <Label>عمل الملف الشخصي</Label>
+                <Label>طبيعة عمل صاحب الحساب</Label>
                 <Input {...field("profile_work")} />
               </div>
             </div>
@@ -1307,8 +1308,8 @@ export default function Accounts() {
                         </Button>
                       )}
                     </Field>
-                    <Field icon={Info} label="عنوان الملف الشخصي" value={profile.profile_address} />
-                    <Field icon={Info} label="عمل الملف الشخصي" value={profile.profile_work} />
+                    <Field icon={Info} label="المنطقة الجغرافية للحساب" value={profile.profile_address} />
+                    <Field icon={Info} label="طبيعة عمل صاحب الحساب" value={profile.profile_work} />
                   </div>
                   <div className="rounded-md border border-dashed px-3 py-2">
                     <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -1625,31 +1626,38 @@ export default function Accounts() {
               <Zap className="size-5 text-primary" />
               تحديث سريع — {quick?.name}
             </DialogTitle>
-            <DialogDescription>سجّل آخر الأرقام والحالة. اترك الحقل فارغًا إن لم يتغير؛ الحفظ بلا تغييرات يسجّل عملية فحص فقط.</DialogDescription>
+            <DialogDescription>
+              أدخل عدد المتابعين أو الأصدقاء الحالي كما يظهر في المنصة، وعدد المنشورات الجديدة منذ آخر فحص — تُضاف تلقائيًا إلى الإجمالي. اترك الحقل فارغًا إن لم يتغير؛ الحفظ بلا تغييرات يسجّل عملية فحص فقط.
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
-                <Label>المتابعون</Label>
+                <Label>المتابعون / الأصدقاء الحاليون</Label>
                 <Input
                   type="number"
                   min={0}
                   inputMode="numeric"
-                  placeholder={`الحالي: ${fmt(quick?.cur.followers)}`}
+                  placeholder={`العدد الحالي: ${fmt(quick?.cur.followers)}`}
                   value={quickForm.followers}
                   onChange={(e) => setQuickForm({ ...quickForm, followers: e.target.value })}
                 />
               </div>
               <div className="grid gap-1.5">
-                <Label>المنشورات</Label>
+                <Label>منشورات جديدة</Label>
                 <Input
                   type="number"
                   min={0}
                   inputMode="numeric"
-                  placeholder={`الحالي: ${fmt(quick?.cur.posts_count)}`}
+                  placeholder="أضيفت منذ آخر فحص"
                   value={quickForm.posts_count}
                   onChange={(e) => setQuickForm({ ...quickForm, posts_count: e.target.value })}
                 />
+                <p className="text-xs text-muted-foreground">
+                  {quickForm.posts_count.trim() !== ""
+                    ? `الإجمالي بعد الحفظ: ${fmt((quick?.cur.posts_count ?? 0) + Number(quickForm.posts_count))}`
+                    : `الإجمالي الحالي: ${fmt(quick?.cur.posts_count)}`}
+                </p>
               </div>
             </div>
             <div className="grid gap-1.5">

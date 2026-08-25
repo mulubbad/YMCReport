@@ -33,41 +33,81 @@ function actionsJson(actions) {
   return uniq.length ? JSON.stringify(uniq) : null;
 }
 
+// repeat fields from a request body -> {repeat, from, until} or {error}; period optional (open-ended = forever)
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+function repeatFields(b) {
+  if (b.repeat == null) return { repeat: null, from: null, until: null };
+  if (b.repeat !== 'daily') return { error: 'نوع التكرار غير صالح' };
+  const from = b.repeat_from ?? null, until = b.repeat_until ?? null;
+  if ((from && !ISO_DAY.test(from)) || (until && !ISO_DAY.test(until))) return { error: 'تاريخ فترة التكرار غير صالح' };
+  if (from && until && from > until) return { error: 'بداية فترة التكرار بعد نهايتها' };
+  return { repeat: 'daily', from, until };
+}
+
 // active role-user members of a group — the denominator for progress/completion
 const members = (gid) =>
   db.prepare("SELECT id FROM users WHERE group_id = ? AND role = 'user' AND active = 1").all(gid).map((u) => u.id);
 
+// daily tasks: completion is per calendar day — interactions carry day = today ('' for one-off tasks),
+// so "done" always means "done today" for repeat tasks and every helper below inherits that for free
+const isDaily = (t) => t.repeat === 'daily';
+const dayKey = (t) => (isDaily(t) ? day() : '');
+const dayKeyOf = (taskId) => dayKey(db.prepare('SELECT repeat FROM tasks WHERE id = ?').get(taskId) ?? {});
+const repeatActive = (t) => isDaily(t) && !t.archived
+  && (!t.repeat_from || t.repeat_from.slice(0, 10) <= day())
+  && (!t.repeat_until || t.repeat_until.slice(0, 10) >= day());
+
+// consecutive completed days ending today or yesterday (all-subtasks rule applies per day)
+function streak(taskId, userId) {
+  const subCount = db.prepare('SELECT COUNT(*) c FROM subtasks WHERE task_id = ?').get(taskId).c;
+  const days = new Set((subCount === 0
+    ? db.prepare("SELECT DISTINCT day FROM interactions WHERE task_id = ? AND user_id = ? AND subtask_id IS NULL AND done = 1 AND day != ''").all(taskId, userId)
+    : db.prepare(`SELECT day FROM interactions WHERE task_id = ? AND user_id = ? AND done = 1 AND subtask_id IS NOT NULL AND day != ''
+                  GROUP BY day HAVING COUNT(DISTINCT subtask_id) = ?`).all(taskId, userId, subCount)).map((r) => r.day));
+  let n = 0;
+  let d = days.has(day()) ? day() : day(-1);
+  while (days.has(d)) { n++; d = day(daysBack(d)); }
+  return n;
+}
+// offset (in days from now) of the day BEFORE the given YYYY-MM-DD — lets streak() walk backwards with day(offset)
+const daysBack = (ymd) => Math.round((Date.parse(`${ymd}T12:00:00`) - Date.now()) / 864e5) - 1;
+
 // [{user_id, completed_at}] of memberIds who completed the task (done on task itself, or on ALL subtasks if any);
-// completed_at = latest done interaction of that member
+// completed_at = latest done interaction of that member; day-scoped (today) for daily tasks
 function doneRows(taskId, memberIds) {
   if (!memberIds.length) return [];
+  const dk = dayKeyOf(taskId);
   const subCount = db.prepare('SELECT COUNT(*) c FROM subtasks WHERE task_id = ?').get(taskId).c;
   const rows = subCount === 0
-    ? db.prepare('SELECT user_id, updated_at AS completed_at FROM interactions WHERE task_id = ? AND subtask_id IS NULL AND done = 1').all(taskId)
-    : db.prepare(`SELECT user_id, MAX(updated_at) AS completed_at FROM interactions WHERE task_id = ? AND done = 1 AND subtask_id IS NOT NULL
-                  GROUP BY user_id HAVING COUNT(DISTINCT subtask_id) = ?`).all(taskId, subCount);
+    ? db.prepare('SELECT user_id, updated_at AS completed_at FROM interactions WHERE task_id = ? AND subtask_id IS NULL AND done = 1 AND day = ?').all(taskId, dk)
+    : db.prepare(`SELECT user_id, MAX(updated_at) AS completed_at FROM interactions WHERE task_id = ? AND done = 1 AND subtask_id IS NOT NULL AND day = ?
+                  GROUP BY user_id HAVING COUNT(DISTINCT subtask_id) = ?`).all(taskId, dk, subCount);
   const set = new Set(memberIds);
   return rows.filter((u) => set.has(u.user_id));
 }
 const doneUsers = (taskId, memberIds) => doneRows(taskId, memberIds).map((u) => u.user_id);
 const taskDone = (taskId, memberIds) => doneUsers(taskId, memberIds).length;
 
-function serializeTask(t, callerId) {
+function serializeTask(t, caller) {
+  // members see only their own state: peers' progress (done_ids/progress) is a group-admin permission
+  const admin = caller.role !== 'user';
   const subtasks = db.prepare('SELECT * FROM subtasks WHERE task_id = ? ORDER BY id').all(t.id);
   const mine = new Map(
-    db.prepare('SELECT subtask_id, done, notes, actions_done FROM interactions WHERE task_id = ? AND user_id = ?')
-      .all(t.id, callerId).map((i) => [i.subtask_id ?? 0, { done: i.done, notes: i.notes, actions_done: parseArr(i.actions_done) }]));
+    db.prepare('SELECT subtask_id, done, notes, actions_done FROM interactions WHERE task_id = ? AND user_id = ? AND day = ?')
+      .all(t.id, caller.id, dayKey(t)).map((i) => [i.subtask_id ?? 0, { done: i.done, notes: i.notes, actions_done: parseArr(i.actions_done) }]));
   const ids = members(t.group_id);
-  const done_ids = doneUsers(t.id, ids);
+  const done_ids = admin ? doneUsers(t.id, ids) : [];
   const noMine = () => ({ done: 0, notes: null, actions_done: [] });
   return {
     ...t,
     subtasks: subtasks.map((s) => ({ ...s, actions: parseArr(s.actions), mine: mine.get(s.id) ?? noMine() })),
     mine: mine.get(0) ?? noMine(),
-    progress: { done: done_ids.length, total: ids.length },
+    progress: admin ? { done: done_ids.length, total: ids.length } : { done: 0, total: 0 },
     done_ids,
     created_by_name: t.created_by ? (db.prepare('SELECT name FROM users WHERE id = ?').get(t.created_by)?.name ?? null) : null,
     comment_count: db.prepare('SELECT COUNT(*) c FROM task_comments WHERE task_id = ?').get(t.id).c,
+    repeat_active: repeatActive(t) ? 1 : 0,
+    my_streak: isDaily(t) ? streak(t.id, caller.id) : 0,
   };
 }
 
@@ -82,7 +122,7 @@ r.get('/tasks', (req, res) => {
   const tasks = gid
     ? db.prepare('SELECT * FROM tasks WHERE group_id = ? AND archived = ? ORDER BY created_at DESC').all(gid, archived)
     : db.prepare('SELECT * FROM tasks WHERE archived = ? ORDER BY created_at DESC').all(archived);
-  res.json(tasks.map((t) => serializeTask(t, req.user.id)));
+  res.json(tasks.map((t) => serializeTask(t, req.user)));
 });
 
 r.post('/tasks', requireRole('admin', 'super'), (req, res) => {
@@ -98,20 +138,22 @@ r.post('/tasks', requireRole('admin', 'super'), (req, res) => {
   }
   for (const s of b.subtasks || []) if (actionsJson(s.actions) === false)
     return res.status(400).json({ error: 'إجراء غير صالح' });
+  const rep = repeatFields(b);
+  if (rep.error) return res.status(400).json({ error: rep.error });
   const id = db.transaction(() => {
-    const info = db.prepare(`INSERT INTO tasks (group_id, kind, title, description, type_id, post_count, category, priority, due_date, created_by)
-                             VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    const info = db.prepare(`INSERT INTO tasks (group_id, kind, title, description, type_id, post_count, category, priority, due_date, repeat, repeat_from, repeat_until, created_by)
+                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(gid, b.kind, b.title, b.description ?? null, b.type_id ?? null, b.post_count ?? null,
-        b.category ?? null, b.priority ?? 'normal', b.due_date ?? null, req.user.id);
+        b.category ?? null, b.priority ?? 'normal', rep.repeat ? null : (b.due_date ?? null), rep.repeat, rep.from, rep.until, req.user.id);
     const ins = db.prepare('INSERT INTO subtasks (task_id, title, url, actions) VALUES (?,?,?,?)');
     for (const s of b.subtasks || []) if (s.title) ins.run(info.lastInsertRowid, s.title, s.url ?? null, actionsJson(s.actions));
     return info.lastInsertRowid;
   })();
   notify(db.prepare('SELECT id FROM users WHERE group_id = ? AND active = 1 AND id != ?').all(gid, req.user.id).map((u) => u.id), {
     key: `task:${id}:new`, kind: 'task_new', title: `مهمة جديدة: ${b.title}`,
-    body: [KIND_AR[b.kind], b.due_date && `الاستحقاق ${b.due_date}`].filter(Boolean).join('، '), link: '/tasks',
+    body: [KIND_AR[b.kind], rep.repeat ? 'مهمة يومية متكررة' : b.due_date && `الاستحقاق ${b.due_date}`].filter(Boolean).join('، '), link: '/tasks',
   });
-  res.json(serializeTask(getTask(id), req.user.id));
+  res.json(serializeTask(getTask(id), req.user));
 });
 
 r.put('/tasks/:id', requireRole('admin', 'super'), (req, res) => {
@@ -128,14 +170,17 @@ r.put('/tasks/:id', requireRole('admin', 'super'), (req, res) => {
   }
   for (const s of b.subtasks || []) if (actionsJson(s.actions) === false)
     return res.status(400).json({ error: 'إجراء غير صالح' });
+  const rep = 'repeat' in b ? repeatFields(b) : { repeat: task.repeat, from: task.repeat_from, until: task.repeat_until };
+  if (rep.error) return res.status(400).json({ error: rep.error });
   db.transaction(() => {
-    db.prepare('UPDATE tasks SET kind = ?, title = ?, description = ?, type_id = ?, post_count = ?, category = ?, priority = ?, due_date = ? WHERE id = ?')
+    db.prepare('UPDATE tasks SET kind = ?, title = ?, description = ?, type_id = ?, post_count = ?, category = ?, priority = ?, due_date = ?, repeat = ?, repeat_from = ?, repeat_until = ? WHERE id = ?')
       .run(b.kind ?? task.kind, b.title ?? task.title,
         'description' in b ? b.description : task.description, type_id,
         'post_count' in b ? b.post_count : task.post_count,
         'category' in b ? b.category : task.category,
         b.priority ?? task.priority,
-        'due_date' in b ? b.due_date : task.due_date, task.id);
+        rep.repeat ? null : ('due_date' in b ? b.due_date : task.due_date),
+        rep.repeat, rep.from, rep.until, task.id);
     if (Array.isArray(b.subtasks)) {
       const existing = new Set(db.prepare('SELECT id FROM subtasks WHERE task_id = ?').all(task.id).map((s) => s.id));
       const keep = [];
@@ -154,7 +199,7 @@ r.put('/tasks/:id', requireRole('admin', 'super'), (req, res) => {
         .run(task.id, ...keep);
     }
   })();
-  res.json(serializeTask(getTask(task.id), req.user.id));
+  res.json(serializeTask(getTask(task.id), req.user));
 });
 
 r.put('/tasks/:id/archive', requireRole('admin', 'super'), (req, res) => {
@@ -162,7 +207,7 @@ r.put('/tasks/:id/archive', requireRole('admin', 'super'), (req, res) => {
   if (!task) return res.status(404).json({ error: 'المهمة غير موجودة' });
   if (!inScope(req.user, task)) return res.status(403).json({ error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' });
   db.prepare('UPDATE tasks SET archived = ? WHERE id = ?').run(req.body?.archived ? 1 : 0, task.id);
-  res.json(serializeTask(getTask(task.id), req.user.id));
+  res.json(serializeTask(getTask(task.id), req.user));
 });
 
 r.delete('/tasks/:id', requireRole('admin', 'super'), (req, res) => {
@@ -180,7 +225,7 @@ r.get('/tasks/:id/interactions', requireRole('admin', 'super'), (req, res) => {
   res.json(db.prepare(`
     SELECT i.*, u.name AS user_name, s.title AS subtask_title
     FROM interactions i JOIN users u ON u.id = i.user_id LEFT JOIN subtasks s ON s.id = i.subtask_id
-    WHERE i.task_id = ? ORDER BY u.name, i.subtask_id`).all(task.id)
+    WHERE i.task_id = ? ORDER BY i.day DESC, u.name, i.subtask_id`).all(task.id)
     .map((i) => ({ ...i, actions_done: parseArr(i.actions_done) })));
 });
 
@@ -204,26 +249,29 @@ r.put('/tasks/:id/interactions', (req, res) => {
     if (actionsDone.some((k) => !required.includes(k)))
       return res.status(400).json({ error: 'إجراء غير مطلوب في هذه المهمة الفرعية' });
   }
+  if (isDaily(task) && !repeatActive(task))
+    return res.status(400).json({ error: 'المهمة اليومية غير نشطة حاليًا' });
   // subtask has actions -> done is derived (client done ignored); otherwise manual flag
   const done = required.length ? (required.every((k) => actionsDone.includes(k)) ? 1 : 0) : (b.done ? 1 : 0);
   const adJson = actionsDone.length ? JSON.stringify(actionsDone) : null;
+  const dk = dayKey(task);
   const wasDone = taskDone(task.id, [req.user.id]);
   const existing = db.prepare(
-    'SELECT id FROM interactions WHERE task_id = ? AND user_id = ? AND COALESCE(subtask_id, 0) = COALESCE(?, 0)')
-    .get(task.id, req.user.id, subtaskId);
+    'SELECT id FROM interactions WHERE task_id = ? AND user_id = ? AND COALESCE(subtask_id, 0) = COALESCE(?, 0) AND day = ?')
+    .get(task.id, req.user.id, subtaskId, dk);
   let id;
   if (existing) {
     db.prepare("UPDATE interactions SET done = ?, notes = ?, actions_done = ?, updated_at = datetime('now') WHERE id = ?")
       .run(done, b.notes ?? null, adJson, existing.id);
     id = existing.id;
   } else {
-    id = db.prepare('INSERT INTO interactions (task_id, subtask_id, user_id, done, notes, actions_done) VALUES (?,?,?,?,?,?)')
-      .run(task.id, subtaskId, req.user.id, done, b.notes ?? null, adJson).lastInsertRowid;
+    id = db.prepare('INSERT INTO interactions (task_id, subtask_id, user_id, done, notes, actions_done, day) VALUES (?,?,?,?,?,?,?)')
+      .run(task.id, subtaskId, req.user.id, done, b.notes ?? null, adJson, dk).lastInsertRowid;
   }
   if (!wasDone && taskDone(task.id, [req.user.id])) { // completion flipped -> tell the group's admins
     const name = db.prepare('SELECT name FROM users WHERE id = ?').get(req.user.id).name;
     notify(groupAdmins(task.group_id, req.user.id), {
-      key: `task:${task.id}:done:${req.user.id}`, kind: 'task_done', title: `إنجاز مهمة: ${task.title}`,
+      key: `task:${task.id}:done:${req.user.id}` + (dk ? `:${dk}` : ''), kind: 'task_done', title: `إنجاز مهمة: ${task.title}`,
       body: `بواسطة ${name}` + (b.notes ? `: ${b.notes}` : ''), link: '/tasks',
     });
   }
@@ -239,8 +287,12 @@ r.get('/tasks/team', (req, res) => {
   const tasks = db.prepare('SELECT id FROM tasks WHERE group_id = ? AND archived = 0').all(gid);
   const people = db.prepare("SELECT id, name, role FROM users WHERE group_id = ? AND active = 1 ORDER BY name").all(gid);
   // ponytail: O(tasks×members) tiny queries — fine at group scale; cache per-task done-sets if it ever matters
+  // members get names only (for @mentions / private messages): per-member stats are a group-admin permission
+  const withStats = req.user.role !== 'user';
   const members = people.filter((u) => u.role === 'user')
-    .map((u) => ({ id: u.id, name: u.name, total: tasks.length, done: tasks.filter((t) => taskDone(t.id, [u.id])).length }));
+    .map((u) => ({ id: u.id, name: u.name,
+      total: withStats ? tasks.length : 0,
+      done: withStats ? tasks.filter((t) => taskDone(t.id, [u.id])).length : 0 }));
   res.json({ group, tasks: tasks.length, members, admins: people.filter((u) => u.role === 'admin').map(({ id, name }) => ({ id, name })) });
 });
 

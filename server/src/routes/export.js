@@ -50,8 +50,8 @@ const SHEETS = {
     return {
       title: 'الحسابات',
       columns: [col('المالك', 20), col('النوع', 14), col('الموقع', 16), col('اسم الحساب', 24), col('رقم الجوال', 16),
-        col('البريد الإلكتروني', 26), col('كلمة المرور', 16), col('الرابط', 30), col('عنوان الملف الشخصي', 22),
-        col('عمل الملف الشخصي', 22), col('الصفحات', 8), ...TRACK_COLS, col('ملاحظات', 30), col('تاريخ الإنشاء', 20)],
+        col('البريد الإلكتروني', 26), col('كلمة المرور', 16), col('الرابط', 30), col('المنطقة الجغرافية للحساب', 22),
+        col('طبيعة عمل صاحب الحساب', 22), col('الصفحات', 8), ...TRACK_COLS, col('ملاحظات', 30), col('تاريخ الإنشاء', 20)],
       rows: rows.map((x) => [x.owner, x.type, x.site, x.name, x.mobile, x.email, x.password, x.link, x.profile_address,
         x.profile_work, x.pages, ...track(x), x.notes, ts(x.created_at)]),
     };
@@ -128,14 +128,14 @@ const SHEETS = {
     const f = frag(q);
     f.eq('t.group_id', q.gid); f.in('i.user_id', q.userIds); f.dates('i.updated_at');
     const rows = db.prepare(`
-      SELECT t.title task, s.title subtask, u.name user, i.done, i.actions_done, i.notes, i.updated_at
+      SELECT t.title task, s.title subtask, u.name user, i.done, i.actions_done, i.notes, i.day, i.updated_at
       FROM interactions i JOIN tasks t ON t.id = i.task_id JOIN users u ON u.id = i.user_id
-      LEFT JOIN subtasks s ON s.id = i.subtask_id ${f.sql()} ORDER BY t.title, u.name`).all(...f.args);
+      LEFT JOIN subtasks s ON s.id = i.subtask_id ${f.sql()} ORDER BY t.title, i.day DESC, u.name`).all(...f.args);
     return {
       title: 'التفاعلات',
       columns: [col('المهمة', 32), col('المهمة الفرعية', 28), col('المستخدم', 20), col('منجز', 8),
-        col('الإجراءات المنفذة', 28), col('ملاحظات', 32), col('آخر تحديث', 20)],
-      rows: rows.map((x) => [x.task, x.subtask, x.user, yesNo(x.done),
+        col('اليوم', 14), col('الإجراءات المنفذة', 28), col('ملاحظات', 32), col('آخر تحديث', 20)],
+      rows: rows.map((x) => [x.task, x.subtask, x.user, yesNo(x.done), x.day || '—',
         JSON.parse(x.actions_done || '[]').map((k) => ACTION_AR[k] ?? k).join('، '), x.notes, ts(x.updated_at)]),
     };
   },

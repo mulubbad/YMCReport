@@ -10,9 +10,11 @@ import {
   Check,
   Clock,
   ExternalLink,
+  Flame,
   MessageCircle,
   MessageSquare,
   Pencil,
+  Repeat,
   Send,
   Trash2,
   Users,
@@ -396,6 +398,9 @@ function DetailBody({
   const lane = laneOf(complete, started, d)
   const chip = due && !complete ? dueChip(d!, due) : null
   const kind = KINDS[t.kind]
+  const daily = t.repeat === "daily"
+  const dailyOff = daily && !t.repeat_active
+  const offReason = !dailyOff ? "" : t.repeat_from && t.repeat_from.slice(0, 10) > today ? ` — تبدأ في ${t.repeat_from.slice(0, 10)}` : t.repeat_until ? ` — انتهت في ${t.repeat_until.slice(0, 10)}` : ""
   const done = new Set(t.done_ids)
   const roster = [...members].sort((a, b) => Number(done.has(b.id)) - Number(done.has(a.id)) || a.name.localeCompare(b.name, "ar"))
   const pendingCount = roster.filter((m) => !done.has(m.id)).length
@@ -442,6 +447,12 @@ function DetailBody({
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
           <Badge variant={LANES[lane].variant}>{LANES[lane].label}</Badge>
           <Badge variant={(PRIORITIES[t.priority] ?? PRIORITIES.normal).variant}>{(PRIORITIES[t.priority] ?? PRIORITIES.normal).label}</Badge>
+          {daily && (
+            <span className={cn("inline-flex items-center gap-1 rounded-badge px-2 py-0.5 text-xs font-semibold", dailyOff ? "bg-muted text-muted-foreground" : "bg-info-light text-info")}>
+              <Repeat className="size-3" aria-hidden />
+              {dailyOff ? "غير نشطة" : "تتجدد يوميًا"}
+            </span>
+          )}
           {chip && (
             <span className={cn("inline-flex items-center gap-1 rounded-badge px-2 py-0.5 text-xs font-semibold", chip.cls)}>
               <chip.Icon className="size-3" aria-hidden />
@@ -497,7 +508,7 @@ function DetailBody({
                           )}
                         </div>
                       ))
-                    : ro
+                    : ro || dailyOff
                       ? t.subtasks.map((s) => <DoneText key={s.id} mine={s.mine} label={s.title} actions={s.actions} url={s.url} />)
                       : t.subtasks.map((s) => (
                           <SubtaskRow key={s.id} taskId={t.id} sub={s} onToggle={(v) => setSubDone((m) => ({ ...m, [s.id]: v }))} />
@@ -508,15 +519,22 @@ function DetailBody({
 
             {!isAdmin && (
               <section className="space-y-2">
-                <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">حالتي</h3>
-                {ro ? (
+                <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{daily ? "حالتي اليوم" : "حالتي"}</h3>
+                {dailyOff && <p className="text-xs text-muted-foreground">المهمة اليومية غير نشطة حاليًا{offReason}.</p>}
+                {daily && t.my_streak > 0 && (
+                  <p className="flex items-center gap-1 text-xs font-semibold text-warning">
+                    <Flame className="size-3.5" aria-hidden />
+                    مواظب منذ {arDays(t.my_streak)}
+                  </p>
+                )}
+                {ro || dailyOff ? (
                   !hasSubs && <DoneText mine={t.mine} />
                 ) : (
                   <>
                     {!hasSubs && (
                       <label className="flex min-h-10 w-fit cursor-pointer items-center gap-2 text-sm font-semibold">
                         <Checkbox className={CHECK_CLS} checked={mine.done} onCheckedChange={(v) => mine.toggle(v === true)} />
-                        {mine.done ? <span className="text-success">أنجزتها</span> : "أنجزتها؟"}
+                        {mine.done ? <span className="text-success">{daily ? "أنجزتها اليوم" : "أنجزتها"}</span> : daily ? "أنجزتها اليوم؟" : "أنجزتها؟"}
                       </label>
                     )}
                     <Textarea
@@ -547,7 +565,15 @@ function DetailBody({
                 <Badge variant={LANES[lane].variant}>{LANES[lane].label}</Badge>
               </Field>
               <Field label="الأولوية">{(PRIORITIES[t.priority] ?? PRIORITIES.normal).label}</Field>
-              <Field label="الاستحقاق">{due ? new Date(due + "T00:00:00Z").toLocaleDateString("ar", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC", numberingSystem: "latn" }) : "—"}</Field>
+              {daily ? (
+                <>
+                  <Field label="التكرار">يوميًا</Field>
+                  {t.repeat_from && <Field label="من">{t.repeat_from.slice(0, 10)}</Field>}
+                  <Field label="حتى">{t.repeat_until ? t.repeat_until.slice(0, 10) : "دائمة"}</Field>
+                </>
+              ) : (
+                <Field label="الاستحقاق">{due ? new Date(due + "T00:00:00Z").toLocaleDateString("ar", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC", numberingSystem: "latn" }) : "—"}</Field>
+              )}
               {t.type_id && <Field label="النوع المستهدف">{typeName(t.type_id) ?? "—"}</Field>}
               {t.post_count && <Field label="عدد المنشورات">{t.post_count}</Field>}
               {t.category && <Field label="الفئة">{t.category}</Field>}
@@ -556,9 +582,10 @@ function DetailBody({
               </Field>
             </dl>
 
+            {isAdmin && (
             <section>
               <h3 className="mb-2 flex items-center justify-between text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                إنجاز الفريق
+                {daily ? "إنجاز الفريق اليوم" : "إنجاز الفريق"}
                 <span className="tabular-nums normal-case">
                   {t.progress.done}/{t.progress.total} · {pct}%
                 </span>
@@ -635,6 +662,7 @@ function DetailBody({
                 <MemberStack members={members} doneIds={t.done_ids} />
               )}
             </section>
+            )}
           </aside>
         </div>
       </div>
