@@ -8,9 +8,19 @@ const insert = db.transaction((userIds, { key, kind, title, body = null, link = 
   if (!KINDS.has(kind)) throw new Error(`unknown notification kind: ${kind}`);
   return userIds.filter((uid) => ins.run(uid, key, kind, title, body, link).changes > 0);
 });
+// update-style events every super admin is copied on; personal kinds (reminders, mentions,
+// private messages, review outcomes) stay targeted to their audience only
+const UPDATE_KINDS = new Set(['task_new', 'task_done', 'account_status', 'profile_request']);
+const activeSupers = () =>
+  db.prepare("SELECT id FROM users WHERE role = 'super' AND active = 1").all().map((u) => u.id);
+
 // rows actually inserted (not de-duplicated) also go out as FCM pushes; fire-and-forget, never blocks the request
-const notify = (userIds, n) => {
-  const fresh = insert(userIds, n);
+// actorId: the user who caused the event — excluded so supers aren't notified of their own actions
+const notify = (userIds, n, actorId = null) => {
+  const ids = UPDATE_KINDS.has(n.kind)
+    ? [...new Set([...userIds, ...activeSupers()])].filter((id) => id !== actorId)
+    : userIds;
+  const fresh = insert(ids, n);
   if (fresh.length) push(fresh, n).catch((e) => console.warn('push:', e.message));
 };
 

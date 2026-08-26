@@ -152,7 +152,7 @@ r.post('/tasks', requireRole('admin', 'super'), (req, res) => {
   notify(db.prepare('SELECT id FROM users WHERE group_id = ? AND active = 1 AND id != ?').all(gid, req.user.id).map((u) => u.id), {
     key: `task:${id}:new`, kind: 'task_new', title: `مهمة جديدة: ${b.title}`,
     body: [KIND_AR[b.kind], rep.repeat ? 'مهمة يومية متكررة' : b.due_date && `الاستحقاق ${b.due_date}`].filter(Boolean).join('، '), link: '/tasks',
-  });
+  }, req.user.id);
   res.json(serializeTask(getTask(id), req.user));
 });
 
@@ -273,7 +273,7 @@ r.put('/tasks/:id/interactions', (req, res) => {
     notify(groupAdmins(task.group_id, req.user.id), {
       key: `task:${task.id}:done:${req.user.id}` + (dk ? `:${dk}` : ''), kind: 'task_done', title: `إنجاز مهمة: ${task.title}`,
       body: `بواسطة ${name}` + (b.notes ? `: ${b.notes}` : ''), link: '/tasks',
-    });
+    }, req.user.id);
   }
   const row = db.prepare('SELECT * FROM interactions WHERE id = ?').get(id);
   res.json({ ...row, actions_done: parseArr(row.actions_done) });

@@ -84,7 +84,7 @@ function logDiff({ account_id, page_id = null, page_name, user_id, before, after
       const to = groupAdmins(acc.group_id, user_id);
       if (acc.user_id !== user_id) to.push(acc.user_id);
       notify(to, { key: `account:${account_id}:status:${after.status}:${day()}`, kind: 'account_status',
-        title: `تغيّرت حالة الحساب: ${acc.name}`, body: `الحالة الجديدة: ${STATUS_AR[after.status]}`, link: '/accounts' });
+        title: `تغيّرت حالة الحساب: ${acc.name}`, body: `الحالة الجديدة: ${STATUS_AR[after.status]}`, link: '/accounts' }, user_id);
     }
   }
   if (changed.includes('followers') || changed.includes('posts_count')) {

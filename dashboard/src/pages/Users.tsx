@@ -45,6 +45,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { RequestsPanel } from "@/components/profileRequests"
+import { ActivityDialog, fmtDuration } from "@/components/ActivityDialog"
 
 type UserRow = {
   id: number
@@ -124,8 +125,18 @@ export default function Users() {
   const [busy, setBusy] = useState(false)
   const [showPw, setShowPw] = useState(false)
   const [created, setCreated] = useState<{ name: string; username: string; password: string } | null>(null)
+  const [activity, setActivity] = useState<Record<number, { active_days: number; total_seconds: number }>>({})
+  const [activityFor, setActivityFor] = useState<UserRow | null>(null)
 
-  const load = () => api.get("/users").then(setRows).catch((e) => toast.error(e.message))
+  const load = () => {
+    api.get("/users").then(setRows).catch((e) => toast.error(e.message))
+    api
+      .get("/activity/summary")
+      .then((r: { users: { id: number; active_days: number; total_seconds: number }[] }) =>
+        setActivity(Object.fromEntries(r.users.map((u) => [u.id, u]))),
+      )
+      .catch(() => {})
+  }
 
   useEffect(() => {
     load()
@@ -255,6 +266,30 @@ export default function Users() {
     </div>
   )
 
+  // average online time per active day over the last 30 days; click opens the per-day breakdown
+  const activityCell = (u: UserRow) => {
+    const a = activity[u.id]
+    const avg = a && a.active_days ? a.total_seconds / a.active_days : 0
+    return (
+      <button
+        type="button"
+        className="cursor-pointer rounded-md text-sm underline-offset-4 outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        aria-label={`سجل نشاط ${u.name}`}
+        title="عرض النشاط اليومي"
+        onClick={() => setActivityFor(u)}
+      >
+        {avg ? (
+          <span className="font-medium tabular-nums">
+            {fmtDuration(avg)}
+            <span className="font-normal text-muted-foreground"> / يوم</span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </button>
+    )
+  }
+
   const activeSwitch = (u: UserRow) => (
     <Switch
       aria-label={`تفعيل ${u.name}`}
@@ -327,6 +362,7 @@ export default function Users() {
                       <TableHead>الدور</TableHead>
                       {isSuper && <TableHead>المجموعة</TableHead>}
                       <TableHead>آخر نشاط</TableHead>
+                      <TableHead>متوسط الاستخدام</TableHead>
                       <TableHead>نشط</TableHead>
                       <TableHead className="w-28" />
                     </TableRow>
@@ -343,6 +379,7 @@ export default function Users() {
                           <TableCell className="text-muted-foreground">{groupName(u.group_id)}</TableCell>
                         )}
                         <TableCell className="whitespace-nowrap">{lastActive(u)}</TableCell>
+                        <TableCell className="whitespace-nowrap">{activityCell(u)}</TableCell>
                         <TableCell>{activeSwitch(u)}</TableCell>
                         <TableCell>
                           <div className="flex justify-end">{actions(u)}</div>
@@ -366,6 +403,7 @@ export default function Users() {
                         <span className="text-xs text-muted-foreground">{groupName(u.group_id)}</span>
                       )}
                       {lastActive(u)}
+                      {activityCell(u)}
                       <label className="ms-auto flex items-center gap-2 text-xs text-muted-foreground">
                         نشط
                         {activeSwitch(u)}
@@ -543,6 +581,8 @@ export default function Users() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ActivityDialog user={activityFor} onClose={() => setActivityFor(null)} />
 
       <AlertDialog open={!!deleting} onOpenChange={(o) => !o && setDeleting(null)}>
         <AlertDialogContent>

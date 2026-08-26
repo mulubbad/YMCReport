@@ -6,15 +6,31 @@ const sign = (u) => jwt.sign({ id: u.id, role: u.role, group_id: u.group_id }, S
 
 const verify = (token) => jwt.verify(token, SECRET);
 
-// last-activity stamp, throttled to one write per user per minute
-let touch;
+// last-activity stamp, at most one write per user per minute. The gap since the previous
+// stamp is credited to user_activity as online time: gaps up to 5 min count in full (an open
+// tab pings every ~60s via the layout badge poll), longer breaks credit only the new ping.
+let stmts;
+function touch(id) {
+  const db = require('./db');
+  stmts ??= {
+    prev: db.prepare('SELECT last_seen_at FROM users WHERE id = ?'),
+    stamp: db.prepare(`UPDATE users SET last_seen_at = datetime('now') WHERE id = ?`),
+    credit: db.prepare(`INSERT INTO user_activity (user_id, day, seconds) VALUES (?, date('now'), ?)
+      ON CONFLICT(user_id, day) DO UPDATE SET seconds = seconds + excluded.seconds`),
+  };
+  const row = stmts.prev.get(id);
+  if (!row) return; // token for a deleted user
+  const gap = row.last_seen_at ? (Date.now() - Date.parse(row.last_seen_at.replace(' ', 'T') + 'Z')) / 1000 : Infinity;
+  if (gap < 60) return;
+  stmts.stamp.run(id);
+  stmts.credit.run(id, Math.round(gap <= 300 ? gap : 60));
+}
+
 function auth(req, res, next) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   try {
     req.user = verify(token);
-    (touch ??= require('./db').prepare(
-      `UPDATE users SET last_seen_at = datetime('now') WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < datetime('now', '-60 seconds'))`,
-    )).run(req.user.id);
+    touch(req.user.id);
     next();
   } catch {
     res.status(401).json({ error: 'انتهت صلاحية الجلسة، يرجى تسجيل الدخول من جديد' });

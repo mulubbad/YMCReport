@@ -133,6 +133,11 @@ CREATE TABLE IF NOT EXISTS entity_notes (
   body TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE INDEX IF NOT EXISTS ix_entity_notes ON entity_notes(entity_type, entity_id, id);
+CREATE TABLE IF NOT EXISTS user_activity (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  seconds INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day));
 CREATE TABLE IF NOT EXISTS profile_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

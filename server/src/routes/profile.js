@@ -14,8 +14,6 @@ const REQUEST_SQL = `SELECT r.*, u.name AS user_name, u.username AS user_usernam
   FROM profile_requests r JOIN users u ON u.id = r.user_id LEFT JOIN users rv ON rv.id = r.reviewed_by`;
 const parse = (row) => ({ ...row, changes: JSON.parse(row.changes) });
 
-const supers = () => db.prepare("SELECT id FROM users WHERE role = 'super' AND active = 1").all().map((u) => u.id);
-
 // user -> own history; super -> everyone's
 r.get('/profile/requests', (req, res) => {
   const rows = req.user.role === 'super'
@@ -42,7 +40,8 @@ r.post('/profile/requests', (req, res) => {
 
   const id = db.prepare('INSERT INTO profile_requests (user_id, changes) VALUES (?, ?)')
     .run(me.id, JSON.stringify(changes)).lastInsertRowid;
-  notify(supers(), {
+  // recipients: notify() copies every active super on profile_request
+  notify([], {
     key: `profile_request:${id}`, kind: 'profile_request',
     title: `طلب تعديل بيانات من ${me.name}`,
     body: Object.entries(changes).map(([f, c]) => `${FIELD_AR[f]}: ${c.from} ← ${c.to}`).join('، '),

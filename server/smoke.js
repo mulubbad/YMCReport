@@ -197,6 +197,24 @@ function step(name, ok, detail) {
     && xt.data.repeat_active === 0 && xi.status === 400 && badRep.status === 400,
     JSON.stringify([dt.data.repeat, dt.data.repeat_active, drow && [drow.mine.done, drow.my_streak], xi.data, badRep.data]));
 
+  // ---- activity: role gate + scoping + shape ----
+  const acSum = await call('GET', '/activity/summary', at);
+  const acDay = await call('GET', `/activity/${us.data.id}?from=2026-01-01&to=2026-12-31`, at);
+  const acDeny = await call('GET', '/activity/summary', ut);
+  const acCross = await call('GET', `/activity/${ub.data.id}`, at);
+  step('activity endpoints', acSum.status === 200 && acSum.data.users.length === 3
+    && acSum.data.users.every((u) => 'total_seconds' in u && 'active_days' in u)
+    && acDay.status === 200 && Array.isArray(acDay.data.days)
+    && acDeny.status === 403 && acCross.status === 403,
+    JSON.stringify([acSum.data, acDay.data, acDeny.status, acCross.status]));
+
+  // super is copied on every update notification (task created/completed, profile request)
+  const supNf = await call('GET', '/notifications', sup);
+  const supKinds = supNf.data.items.map((n) => n.kind);
+  step('super update notifications', supNf.status === 200
+    && ['task_new', 'task_done', 'profile_request'].every((k) => supKinds.includes(k)),
+    JSON.stringify(supKinds));
+
   const ex = await call('GET', '/export', at);
   step('export xlsx', ex.status === 200 && ex.ct.includes('spreadsheetml') && ex.data.subarray(0, 2).toString() === 'PK',
     `ct=${ex.ct} bytes=${ex.data.length}`);
