@@ -1,6 +1,18 @@
 export const BASE = import.meta.env.VITE_API_URL ?? ""
 export const getToken = () => localStorage.getItem("token")
 
+// The active group workspace (ScopeProvider owns it). Every request carries it, so a leader running
+// several groups sees exactly one at a time without any page knowing about it. A path that already
+// names a group wins — the server rejects any group the caller does not lead either way.
+let activeGroup: number | null = null
+export const setActiveGroup = (id: number | null) => {
+  activeGroup = id
+}
+export const scopedPath = (path: string) =>
+  activeGroup == null || /[?&]group_id=/.test(path)
+    ? path
+    : `${path}${path.includes("?") ? "&" : "?"}group_id=${activeGroup}`
+
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem("token")
   return token ? { Authorization: `Bearer ${token}` } : {}
@@ -20,7 +32,7 @@ const net = (url: string, init?: RequestInit) =>
 async function request(path: string, init: RequestInit = {}): Promise<any> {
   // FormData sets its own multipart boundary — never force a JSON content-type on it
   const json = !(init.body instanceof FormData)
-  const res = await net(`${BASE}/api${path}`, {
+  const res = await net(`${BASE}/api${scopedPath(path)}`, {
     ...init,
     headers: { ...(json ? { "Content-Type": "application/json" } : {}), ...authHeaders() },
   })
@@ -43,7 +55,7 @@ export const api = {
   del: (path: string) => request(path, { method: "DELETE" }),
   upload: (path: string, form: FormData) => request(path, { method: "POST", body: form }),
   download: async (path: string) => {
-    const res = await net(`${BASE}/api${path}`, { headers: authHeaders() })
+    const res = await net(`${BASE}/api${scopedPath(path)}`, { headers: authHeaders() })
     if (!res.ok) await fail(res)
     const name =
       res.headers.get("Content-Disposition")?.match(/filename="?([^"]+?)"?$/)?.[1] ??

@@ -176,11 +176,30 @@ function step(name, ok, detail) {
   const rq2 = await call('POST', '/profile/requests', ut, { username: 'user1x' });
   const rqDecline = await call('PUT', `/profile/requests/${rq2.data.id}`, sup, { status: 'declined', note: 'غير مناسب' });
   const hist = await call('GET', '/profile/requests', ut);
-  const nonSuper = await call('PUT', `/profile/requests/${rq2.data.id}`, at, { status: 'approved' });
+  const settled = await call('PUT', `/profile/requests/${rq2.data.id}`, at, { status: 'approved' }); // already decided
   step('profile request review+history', rqApprove.status === 200 && meApproved.data.name === 'User One Prime'
     && rqDecline.status === 200 && rqDecline.data.status === 'declined' && rqDecline.data.note === 'غير مناسب'
-    && hist.status === 200 && hist.data.length === 2 && nonSuper.status === 403,
-    JSON.stringify([meApproved.data.name, rqDecline.data, hist.data.length, nonSuper.data]));
+    && hist.status === 200 && hist.data.length === 2 && settled.status === 400,
+    JSON.stringify([meApproved.data.name, rqDecline.data, hist.data.length, settled.data]));
+
+  // the group's own leader decides its members' requests — no super needed
+  const rq3 = await call('POST', '/profile/requests', ut, { username: 'user1z' });
+  const adminQueue = await call('GET', '/profile/requests', at);
+  const adminOk = await call('PUT', `/profile/requests/${rq3.data.id}`, at, { status: 'approved' });
+  const meRenamed = await call('GET', '/me', ut);
+  step('group leader reviews own member request', rq3.status === 200
+    && adminQueue.status === 200 && adminQueue.data.some((x) => x.id === rq3.data.id)
+    && adminOk.status === 200 && adminOk.data.status === 'approved' && meRenamed.data.username === 'user1z',
+    JSON.stringify([adminQueue.data.length, adminOk.data, meRenamed.data.username]));
+
+  // a leader may rename a member directly (username included); members still cannot rename themselves
+  const setUname = await call('PUT', `/users/${us.data.id}`, at, { name: 'User One Renamed', username: 'user1final' });
+  const takenUname = await call('PUT', `/users/${us.data.id}`, at, { username: 'user2' });
+  const selfUname = await call('PUT', `/users/${us.data.id}`, ut, { username: 'sneaky' });
+  const meRe = await call('GET', '/me', ut);
+  step('leader edits member username', setUname.status === 200 && setUname.data.username === 'user1final'
+    && takenUname.status === 400 && selfUname.status === 200 && meRe.data.username === 'user1final',
+    JSON.stringify([setUname.data, takenUname.data, meRe.data.username]));
 
   const dt = await call('POST', '/tasks', at, { kind: 'general', title: 'Daily standup', repeat: 'daily' });
   const di = await call('PUT', `/tasks/${dt.data.id}/interactions`, ut, { done: true });
@@ -196,6 +215,14 @@ function step(name, ok, detail) {
     && di.status === 200 && drow && drow.mine.done === 1 && drow.my_streak === 1 && drow.progress.total === 0 && drowA.progress.done === 1
     && xt.data.repeat_active === 0 && xi.status === 400 && badRep.status === 400,
     JSON.stringify([dt.data.repeat, dt.data.repeat_active, drow && [drow.mine.done, drow.my_streak], xi.data, badRep.data]));
+
+  const dh = await call('GET', `/tasks/${dt.data.id}/daily`, at);
+  const dhDeny = await call('GET', `/tasks/${dt.data.id}/daily`, ut);
+  const dhNot = await call('GET', `/tasks/${tk.data.id}/daily`, at);
+  step('daily history', dh.status === 200 && dh.data.days.length === 1 && dh.data.days[0].done === 1
+    && dh.data.days[0].names.length === 1 && dh.data.days[0].total >= 1
+    && dhDeny.status === 403 && dhNot.status === 400,
+    JSON.stringify([dh.data, dhDeny.status, dhNot.data]));
 
   // ---- activity: role gate + scoping + shape ----
   const acSum = await call('GET', '/activity/summary', at);
@@ -214,6 +241,112 @@ function step(name, ok, detail) {
   step('super update notifications', supNf.status === 200
     && ['task_new', 'task_done', 'profile_request'].every((k) => supKinds.includes(k)),
     JSON.stringify(supKinds));
+
+  // ---- an admin leading SEVERAL groups: each group is an encapsulated workspace ----
+  const adB = await call('POST', '/users', sup, { username: 'adminb', password: 'pass1234', name: 'Admin Beta', role: 'admin', group_id: gB.data.id });
+  const adBt = (await call('POST', '/login', null, { username: 'adminb', password: 'pass1234' })).data.token;
+  const solo = await call('GET', '/groups', adBt);
+  const crossReq = await call('POST', '/profile/requests', ut, { name: 'Cross Attempt' });
+  const crossDeny = await call('PUT', `/profile/requests/${crossReq.data.id}`, adBt, { status: 'approved' });
+  step('leader sees only led groups', solo.status === 200 && solo.data.length === 1 && solo.data[0].name === 'Beta'
+    && crossDeny.status === 403,
+    JSON.stringify([solo.data.map((x) => x.name), crossDeny.data]));
+
+  // super grants admin1 a second group
+  const grant = await call('PUT', `/users/${ad.data.id}`, sup, { group_ids: [g.data.id, gB.data.id] });
+  const myGroups = await call('GET', '/groups', at);
+  step('super grants a second group', grant.status === 200
+    && Array.isArray(grant.data.group_ids) && grant.data.group_ids.length === 2
+    && myGroups.status === 200 && myGroups.data.length === 2
+    && myGroups.data.every((x) => 'member_count' in x && 'account_count' in x && 'task_count' in x),
+    JSON.stringify([grant.data.group_ids, myGroups.data.map((x) => x.name)]));
+
+  // the SAME token now scopes to either group with ?group_id, and to Alpha (its default) without one
+  const uAlpha = await call('GET', '/users', at);
+  const uBeta = await call('GET', `/users?group_id=${gB.data.id}`, at);
+  const uUnled = await call('GET', '/users?group_id=999', at);
+  step('scope switches per group', uAlpha.status === 200 && uAlpha.data.every((u) => u.group_id === g.data.id)
+    && uBeta.status === 200 && uBeta.data.length > 0 && uBeta.data.every((u) => u.group_id === gB.data.id)
+    && uUnled.status === 403,
+    JSON.stringify([uAlpha.data.map((u) => u.username), uBeta.data.map((u) => u.username), uUnled.status]));
+
+  // full feature set inside the second group: members, data, tasks, reports, export
+  const newB = await call('POST', `/users?group_id=${gB.data.id}`, at, { username: 'userb2', password: 'pass1234', name: 'User Beta Two' });
+  const tyB = await call('POST', `/types?group_id=${gB.data.id}`, at, { name: 'x', allows_pages: false });
+  const tkB = await call('POST', '/tasks', at, { kind: 'general', title: 'Beta task', group_id: gB.data.id });
+  const simB = await call('POST', '/sims', at, { number: '0595555555', user_id: ub.data.id });
+  const accB = await call('POST', '/accounts', at, { type_id: tyB.data.id, name: 'Beta acc', mobile: '0595555555', user_id: ub.data.id });
+  const stB = await call('GET', `/stats?group_id=${gB.data.id}`, at);
+  const repB = await call('GET', `/report?sheet=sims&group_id=${gB.data.id}`, at);
+  const exB = await call('GET', `/export?group_id=${gB.data.id}`, at);
+  step('second group is fully manageable', newB.status === 200 && newB.data.group_id === gB.data.id
+    && tyB.status === 200 && tkB.status === 200 && tkB.data.group_id === gB.data.id
+    && simB.status === 200 && accB.status === 200
+    && stB.status === 200 && stB.data.detail && stB.data.detail.groups.length === 1 && stB.data.detail.groups[0].name === 'Beta'
+    && repB.status === 200 && repB.data.rows.some((row) => row[1] === '0595555555')
+    && exB.status === 200 && exB.data.subarray(0, 2).toString() === 'PK',
+    JSON.stringify([newB.data, tkB.data.group_id, stB.data.detail && stB.data.detail.groups, repB.data.total]));
+
+  // Alpha's numbers are untouched by Beta's data — the two workspaces stay separate
+  const stA = await call('GET', '/stats', at);
+  const tlA = await call('GET', '/tasks', at);
+  const tlB = await call('GET', `/tasks?group_id=${gB.data.id}`, at);
+  step('groups stay encapsulated', stA.status === 200 && stA.data.detail.groups.length === 1 && stA.data.detail.groups[0].name === 'Alpha'
+    && tlA.data.every((t) => t.group_id === g.data.id) && tlB.data.every((t) => t.group_id === gB.data.id)
+    && tlB.data.some((t) => t.title === 'Beta task') && !tlA.data.some((t) => t.title === 'Beta task'),
+    JSON.stringify([stA.data.detail.groups.map((x) => x.name), tlA.data.length, tlB.data.length]));
+
+  // revoking Beta closes every door again
+  const revoke = await call('PUT', `/users/${ad.data.id}`, sup, { group_ids: [g.data.id] });
+  const gone = await call('GET', `/users?group_id=${gB.data.id}`, at);
+  const goneTask = await call('POST', '/tasks', at, { kind: 'general', title: 'nope', group_id: gB.data.id });
+  step('revoking a group revokes access', revoke.status === 200 && revoke.data.group_ids.length === 1
+    && gone.status === 403 && goneTask.status === 403,
+    JSON.stringify([revoke.data.group_ids, gone.status, goneTask.status]));
+
+  // ---- leak regressions: a leader must never reach a group they do not lead ----
+  // 1. an admin who leads NO group gets an empty manager dashboard, not the whole system
+  const orphan = await call('POST', '/users', sup, { username: 'orphan', password: 'pass1234', name: 'Orphan Admin', role: 'admin' });
+  const ot = (await call('POST', '/login', null, { username: 'orphan', password: 'pass1234' })).data.token;
+  const oStats = await call('GET', '/stats', ot);
+  step('group-less admin sees no group', orphan.status === 200 && oStats.status === 200
+    && oStats.data.detail && oStats.data.detail.groups.length === 0 && oStats.data.detail.members.length === 0
+    && oStats.data.detail.recent.length === 0 && oStats.data.detail.attention.length === 0,
+    JSON.stringify(oStats.data.detail));
+
+  // 2+3. a leader moved out of a group loses its chat room and its tasks, even on a token minted before the move
+  const adC = await call('POST', '/users', sup, { username: 'adminc', password: 'pass1234', name: 'Admin C', role: 'admin', group_id: g.data.id });
+  const ct = (await call('POST', '/login', null, { username: 'adminc', password: 'pass1234' })).data.token;
+  const secret = await call('POST', '/chat/messages', ct, { body: 'SECRET-ALPHA-ONLY' });
+  const alphaTask = await call('POST', '/tasks', ct, { kind: 'general', title: 'Alpha only task' });
+  await call('PUT', `/users/${adC.data.id}`, sup, { group_id: gB.data.id, group_ids: [gB.data.id] }); // moved to Beta
+  const staleRoom = await call('GET', '/chat/messages', ct);          // no ?group_id -> must NOT fall back to Alpha
+  const staleWrite = await call('POST', '/chat/messages', ct, { body: 'I-SHOULD-NOT-BE-HERE' });
+  const staleTick = await call('PUT', `/tasks/${alphaTask.data.id}/interactions`, ct, { done: true });
+  const staleTasks = await call('GET', '/tasks', ct);
+  const alphaRoom = await call('GET', `/chat/messages?group_id=${g.data.id}`, sup);   // where did the write land?
+  const betaRoom = await call('GET', `/chat/messages?group_id=${gB.data.id}`, sup);
+  const bodies = (r) => r.data.items.map((m) => m.body);
+  step('stale token cannot reach the old group', secret.status === 200 && alphaTask.status === 200
+    && staleRoom.status === 200 && !bodies(staleRoom).includes('SECRET-ALPHA-ONLY')
+    && staleWrite.status === 200
+    && !bodies(alphaRoom).includes('I-SHOULD-NOT-BE-HERE') && bodies(betaRoom).includes('I-SHOULD-NOT-BE-HERE')
+    && staleTick.status === 403
+    && !staleTasks.data.some((t) => t.id === alphaTask.data.id),
+    JSON.stringify([bodies(staleRoom), bodies(alphaRoom), bodies(betaRoom), staleTick.status]));
+
+  // 4. the chat read pointer is per room — reading one room must not clear another's unread
+  await call('PUT', `/users/${ad.data.id}`, sup, { group_ids: [g.data.id, gB.data.id] }); // admin1 leads both again
+  const mA = await call('POST', `/chat/messages?group_id=${g.data.id}`, ut, { body: 'alpha-unread' });
+  const mB = await call('POST', `/chat/messages?group_id=${gB.data.id}`, sup, { body: 'beta-unread' });
+  const beforeA = await call('GET', `/stats?group_id=${g.data.id}`, at);
+  const beforeB = await call('GET', `/stats?group_id=${gB.data.id}`, at);
+  await call('PUT', `/chat/read?group_id=${g.data.id}`, at, { last_id: Math.max(mA.data.id, mB.data.id) });
+  const afterA = await call('GET', `/stats?group_id=${g.data.id}`, at);
+  const afterB = await call('GET', `/stats?group_id=${gB.data.id}`, at);
+  step('chat read pointer is per room', beforeA.data.chat_unread > 0 && beforeB.data.chat_unread > 0
+    && afterA.data.chat_unread === 0 && afterB.data.chat_unread === beforeB.data.chat_unread,
+    JSON.stringify([beforeA.data.chat_unread, beforeB.data.chat_unread, afterA.data.chat_unread, afterB.data.chat_unread]));
 
   const ex = await call('GET', '/export', at);
   step('export xlsx', ex.status === 200 && ex.ct.includes('spreadsheetml') && ex.data.subarray(0, 2).toString() === 'PK',

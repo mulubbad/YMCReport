@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { auth, requireRole } = require('../auth');
+const { auth, requireRole, scopeGid, canManage, FORBIDDEN } = require('../auth');
 
 const r = express.Router();
 
@@ -10,7 +10,8 @@ for (const { table, route, values } of [
   { table: 'sites', route: 'sites', values: (b) => ({ name: b.name, url: b.url ?? null }) },
 ]) {
   r.get(`/${route}`, auth, (req, res) => {
-    const gid = req.user.role === 'super' ? req.query.group_id : req.user.group_id;
+    const gid = scopeGid(req, res);
+    if (gid === false) return;
     // groupless non-super sees nothing, not everything
     if (!gid && req.user.role !== 'super') return res.json([]);
     res.json(gid
@@ -20,7 +21,8 @@ for (const { table, route, values } of [
 
   r.post(`/${route}`, auth, requireRole('admin', 'super'), (req, res) => {
     const b = req.body || {};
-    const gid = req.user.role === 'admin' ? req.user.group_id : b.group_id;
+    const gid = req.user.role === 'admin' ? scopeGid(req, res) : b.group_id;
+    if (gid === false) return;
     if (!gid) return res.status(400).json({ error: 'يجب تحديد المجموعة' });
     if (!b.name) return res.status(400).json({ error: 'الاسم مطلوب' });
     const v = values(b);
@@ -33,8 +35,8 @@ for (const { table, route, values } of [
   const scoped = (req, res) => {
     const row = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(req.params.id);
     if (!row) { res.status(404).json({ error: 'العنصر غير موجود' }); return null; }
-    if (req.user.role === 'admin' && row.group_id !== req.user.group_id) {
-      res.status(403).json({ error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' });
+    if (req.user.role === 'admin' && !canManage(req.user, row.group_id)) {
+      res.status(403).json(FORBIDDEN);
       return null;
     }
     return row;

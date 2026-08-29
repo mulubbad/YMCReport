@@ -6,3 +6,7 @@ dist/
 server/firebase-sa.json
 *.db-shm
 *.db-wal
+
+# scratch dev harness (screenshot runs against the scratch API on :3101)
+dashboard/vite.scratch.config.mts
+dashboard/vite.scratch.pwa-stub.ts

@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../db');
-const { auth, requireRole } = require('../auth');
-const { notify } = require('../notify');
+const { auth, requireRole, canManage, scopeGid, FORBIDDEN } = require('../auth');
+const { notify, groupAdmins } = require('../notify');
 
 const r = express.Router();
 r.use(auth);
@@ -10,15 +10,23 @@ r.use(auth);
 const REQUESTABLE = ['name', 'username'];
 const FIELD_AR = { name: 'الاسم', username: 'اسم المستخدم' };
 
-const REQUEST_SQL = `SELECT r.*, u.name AS user_name, u.username AS user_username, rv.name AS reviewer_name
+const REQUEST_SQL = `SELECT r.*, u.name AS user_name, u.username AS user_username,
+  u.group_id AS user_group_id, u.role AS user_role, rv.name AS reviewer_name
   FROM profile_requests r JOIN users u ON u.id = r.user_id LEFT JOIN users rv ON rv.id = r.reviewed_by`;
 const parse = (row) => ({ ...row, changes: JSON.parse(row.changes) });
 
-// user -> own history; super -> everyone's
+// member -> own history; leader -> the ACTIVE group's requests (plus their own), like every other
+// screen; super with no group selected -> everyone's
 r.get('/profile/requests', (req, res) => {
-  const rows = req.user.role === 'super'
-    ? db.prepare(`${REQUEST_SQL} ORDER BY r.id DESC LIMIT 200`).all()
-    : db.prepare(`${REQUEST_SQL} WHERE r.user_id = ? ORDER BY r.id DESC LIMIT 200`).all(req.user.id);
+  const me = req.user;
+  const own = () => db.prepare(`${REQUEST_SQL} WHERE r.user_id = ? ORDER BY r.id DESC LIMIT 200`).all(me.id);
+  if (me.role === 'user') return res.json(own().map(parse));
+  const gid = scopeGid(req, res);
+  if (gid === false) return;
+  if (me.role === 'admin' && !gid) return res.json(own().map(parse));
+  const rows = gid
+    ? db.prepare(`${REQUEST_SQL} WHERE u.group_id = ? OR r.user_id = ? ORDER BY r.id DESC LIMIT 200`).all(gid, me.id)
+    : db.prepare(`${REQUEST_SQL} ORDER BY r.id DESC LIMIT 200`).all();
   res.json(rows.map(parse));
 });
 
@@ -40,8 +48,8 @@ r.post('/profile/requests', (req, res) => {
 
   const id = db.prepare('INSERT INTO profile_requests (user_id, changes) VALUES (?, ?)')
     .run(me.id, JSON.stringify(changes)).lastInsertRowid;
-  // recipients: notify() copies every active super on profile_request
-  notify([], {
+  // the leaders of the requester's group act on this; notify() copies every active super too
+  notify(groupAdmins(me.group_id, me.id), {
     key: `profile_request:${id}`, kind: 'profile_request',
     title: `طلب تعديل بيانات من ${me.name}`,
     body: Object.entries(changes).map(([f, c]) => `${FIELD_AR[f]}: ${c.from} ← ${c.to}`).join('، '),
@@ -50,9 +58,13 @@ r.post('/profile/requests', (req, res) => {
   res.json(parse(db.prepare(`${REQUEST_SQL} WHERE r.id = ?`).get(id)));
 });
 
-r.put('/profile/requests/:id', requireRole('super'), (req, res) => {
+r.put('/profile/requests/:id', requireRole('admin', 'super'), (req, res) => {
   const row = db.prepare(`${REQUEST_SQL} WHERE r.id = ?`).get(req.params.id);
   if (!row) return res.status(404).json({ error: 'الطلب غير موجود' });
+  // an admin decides requests from members of the groups they lead; their own request still goes to a super
+  if (req.user.role === 'admin'
+    && !(canManage(req.user, row.user_group_id) && row.user_role === 'user' && row.user_id !== req.user.id))
+    return res.status(403).json(FORBIDDEN);
   if (row.status !== 'pending') return res.status(400).json({ error: 'تم البتّ في هذا الطلب مسبقًا' });
   const { status, note } = req.body || {};
   if (!['approved', 'declined'].includes(status)) return res.status(400).json({ error: 'الحالة غير صالحة' });

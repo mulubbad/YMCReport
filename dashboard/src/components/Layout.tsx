@@ -4,6 +4,8 @@ import {
   AtSign,
   Bell,
   Building2,
+  Check,
+  ChevronsUpDown,
   ClipboardList,
   Download,
   LayoutDashboard,
@@ -32,6 +34,7 @@ import { Pwa } from "@/components/Pwa"
 import { NotificationBell } from "@/components/Notifications"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
 
 // sidebar sections: daily work first, then administration, then reporting (sections with no visible items are hidden)
 const nav = [
@@ -43,7 +46,7 @@ const nav = [
   { to: "/notifications", label: "الإشعارات", icon: Bell, section: "العمل" },
   { to: "/chat", label: "المحادثة", icon: MessageSquareText, section: "العمل" },
   { to: "/users", label: "المستخدمون", icon: Users, roles: ["admin", "super"], section: "الإدارة" },
-  { to: "/groups", label: "المجموعات", icon: Building2, roles: ["super"], section: "الإدارة" },
+  { to: "/groups", label: "المجموعات", icon: Building2, roles: ["admin", "super"], section: "الإدارة" },
   { to: "/settings", label: "الإعدادات", icon: Settings, roles: ["admin", "super"], section: "الإدارة" },
   { to: "/export", label: "تصدير التقارير", icon: Download, roles: ["admin", "super"], section: "التقارير" },
 ]
@@ -59,8 +62,84 @@ const initials = (name: string) =>
     .map((w) => w[0])
     .join("")
 
+// Workspace switcher — the frame that makes each group feel like its own app. Sits under the brand so
+// every nav item below it reads as "inside this group". One group → a plain label, no menu.
+function GroupSwitcher() {
+  const { user } = useAuth()
+  const { groups, gid, active, setGid, multi } = useScope()
+  if (!user || user.role === "user" || groups.length === 0) return null
+
+  const isSuper = user.role === "super"
+  const title = active?.name ?? (isSuper ? "كل المجموعات" : "—")
+  const tile = active ? active.name.trim()[0] : "\u0643"
+
+  const body = (
+    <>
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-sm font-bold text-white">
+        {tile}
+      </span>
+      <span className="min-w-0 text-start">
+        <span className="block truncate text-sm font-semibold text-white">{title}</span>
+        <span className="block text-[11px] text-sidebar-heading">مساحة العمل</span>
+      </span>
+    </>
+  )
+
+  if (!multi && !isSuper)
+    return (
+      <div className="mx-4 mb-2 flex items-center gap-3 rounded-md bg-white/5 px-3 py-2">{body}</div>
+    )
+
+  const choose = (id: number | null) => {
+    setGid(id)
+    window.dispatchEvent(new Event("ymc:refresh"))
+  }
+
+  return (
+    <div className="mx-4 mb-2">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={`مساحة العمل الحالية: ${title} — تبديل المجموعة`}
+            className="flex w-full cursor-pointer items-center gap-3 rounded-md bg-white/5 px-3 py-2 transition-colors duration-150 outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            {body}
+            <ChevronsUpDown className="ms-auto size-4 shrink-0 text-sidebar-heading" aria-hidden />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-64">
+          <DropdownMenuLabel>المجموعات التي تديرها</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          {isSuper && (
+            <DropdownMenuItem onClick={() => choose(null)}>
+              <Check className={cn("size-4", gid !== null && "opacity-0")} aria-hidden />
+              كل المجموعات
+            </DropdownMenuItem>
+          )}
+          {groups.map((g) => (
+            <DropdownMenuItem key={g.id} onClick={() => choose(g.id)}>
+              <Check className={cn("size-4", gid !== g.id && "opacity-0")} aria-hidden />
+              <span className="min-w-0 flex-1 truncate">{g.name}</span>
+              <span className="text-xs text-muted-foreground tabular-nums">{g.member_count}</span>
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem asChild>
+            <Link to="/groups">
+              <Building2 />
+              إدارة المجموعات
+            </Link>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}
+
 export default function Layout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
+  const { active: activeGroup } = useScope()
   const { pathname } = useLocation()
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState(0)
@@ -138,6 +217,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         <div className="flex h-[65px] shrink-0 items-center gap-3 px-6">
           <Brand className="text-white" />
         </div>
+        <GroupSwitcher />
         <nav className="flex-1 overflow-y-auto pt-2" aria-label="أقسام القائمة">
           {sections.map((section) => {
             const group = items.filter((n) => n.section === section)
@@ -215,6 +295,15 @@ export default function Layout({ children }: { children: ReactNode }) {
               <Link to="/" className="hover:text-primary">
                 الرئيسية
               </Link>
+              {/* the active workspace stays visible on mobile, where the switcher is inside the drawer */}
+              {activeGroup && (
+                <>
+                  <span className="mx-1">/</span>
+                  <Link to="/groups" className="hover:text-primary">
+                    {activeGroup.name}
+                  </Link>
+                </>
+              )}
               <span className="mx-1">/</span>
               <span className="text-foreground">{page}</span>
             </nav>

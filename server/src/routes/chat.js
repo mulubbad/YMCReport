@@ -2,7 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const multer = require('multer');
 const db = require('../db');
-const { auth, verify, requireRole } = require('../auth');
+const { auth, verify, requireRole, canManage, scopeGid } = require('../auth');
 const { notify } = require('../notify');
 const { push } = require('../push');
 const sse = require('../sse');
@@ -12,20 +12,26 @@ const r = express.Router();
 const FORBIDDEN = { error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' };
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next); // express 4 + async handlers
 
-// room = group_id: caller's group; super picks one with ?group_id. Sends 400/403/404 and returns null when not allowed
+// room = group_id: any group the caller leads (a member leads only their own); super picks one with
+// ?group_id. Sends 400/403/404 and returns null when not allowed.
 function room(req, res) {
   const me = req.user, q = Number(req.query.group_id) || null;
   if (me.role !== 'super') {
-    if (q && q !== me.group_id) { res.status(403).json(FORBIDDEN); return null; }
-    if (!me.group_id) { res.status(400).json({ error: 'لست عضوًا في أي مجموعة' }); return null; }
-    return me.group_id;
+    // scopeGid, not the token's group_id: a leader moved out of a group must lose its room too
+    const gid = scopeGid(req, res);
+    if (gid === false) return null;
+    if (!gid) { res.status(400).json({ error: 'لست عضوًا في أي مجموعة' }); return null; }
+    return gid;
   }
   if (!q) { res.status(400).json({ error: 'حدّد المجموعة (group_id)' }); return null; }
   if (!db.prepare('SELECT 1 FROM groups WHERE id = ?').get(q)) { res.status(404).json({ error: 'المجموعة غير موجودة' }); return null; }
   return q;
 }
 
-const roomUsers = (gid) => db.prepare('SELECT id, name, username, role FROM users WHERE group_id = ? AND active = 1 ORDER BY name').all(gid);
+// the room's people: the group's own users plus every admin who leads it from another default group
+const roomUsers = (gid) => db.prepare(`SELECT id, name, username, role FROM users
+  WHERE active = 1 AND (group_id = ? OR id IN (SELECT user_id FROM admin_groups WHERE group_id = ?))
+  ORDER BY name`).all(gid, gid);
 
 // ---- stream (EventSource can't send headers → JWT in the query; defined before the path-scoped auth below,
 // and this router is mounted first in index.js because the other routers' bare r.use(auth) 401s every /api request) ----
@@ -179,9 +185,13 @@ r.get('/chat/tags', (req, res) => {
 });
 
 r.put('/chat/read', (req, res) => {
+  const gid = room(req, res);
+  if (!gid) return;
   const last = Number(req.body?.last_id);
   if (!Number.isInteger(last) || last < 0) return res.status(400).json({ error: 'معرّف الرسالة غير صالح' });
-  db.prepare('INSERT INTO chat_reads (user_id, last_read_id) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_read_id = max(last_read_id, excluded.last_read_id)').run(req.user.id, last);
+  // one pointer per room — a leader in several rooms must not have one room's read mark clear another's
+  db.prepare(`INSERT INTO chat_reads (user_id, group_id, last_read_id) VALUES (?, ?, ?)
+    ON CONFLICT(user_id, group_id) DO UPDATE SET last_read_id = max(last_read_id, excluded.last_read_id)`).run(req.user.id, gid, last);
   res.json({ ok: true });
 });
 

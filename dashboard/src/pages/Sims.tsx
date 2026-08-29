@@ -15,6 +15,7 @@ import {
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -46,7 +47,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { OwnerOptions, type OwnerGroup, type OwnerUser } from "@/components/OwnerOptions"
+import { OwnerOptions, type OwnerUser } from "@/components/OwnerOptions"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
@@ -123,7 +124,9 @@ export default function Sims() {
 
   const [rows, setRows] = useState<Sim[] | null>(null)
   const [users, setUsers] = useState<OwnerUser[]>([])
-  const [groups, setGroups] = useState<OwnerGroup[]>([])
+  // owner lists are sectioned by group only when the view spans several (super, all groups)
+  const { groups: scopeGroups, gid: activeGid } = useScope()
+  const groups = activeGid ? [] : scopeGroups
   const [filterUser, setFilterUser] = useState("all")
   const [q, setQ] = useState("")
   const [chip, setChip] = useState("all")
@@ -146,7 +149,6 @@ export default function Sims() {
 
   useEffect(() => {
     if (isAdmin) api.get("/users").then(setUsers).catch((e) => toast.error(e.message))
-    if (me.role === "super") api.get("/groups").then(setGroups).catch((e) => toast.error(e.message))
   }, [isAdmin, me.role])
 
   const ownerOptions = <OwnerOptions users={users} groups={groups} meId={me.id} />

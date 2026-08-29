@@ -20,12 +20,12 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { KINDS, ago, arDays, initials, type Kind } from "@/components/tasks/shared"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
 import { cn } from "@/lib/utils"
 
 // ---- contract shapes (CONTRACT.md "Manager dashboard") ------------------------------------------
@@ -187,14 +187,13 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
   const presets = useMemo(() => presetsFor(today), [today])
   const [from, setFrom] = useState(presets[1].from)
   const [to, setTo] = useState(presets[1].to)
-  const [groupId, setGroupId] = useState("")
-  const [groups, setGroups] = useState<{ id: number; name: string }[]>([])
+  // the group comes from the workspace switcher; api.ts puts it on every request
+  const { gid } = useScope()
   const [stats, setStats] = useState<Stats | null>(null)
   const [loading, setLoading] = useState(true)
   const seq = useRef(0)
 
   useEffect(() => {
-    if (isSuper) api.get("/groups").then(setGroups).catch(() => {})
   }, [isSuper])
 
   const rangeOk = VALID.test(from) && VALID.test(to) && from <= to
@@ -203,10 +202,10 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
     const id = ++seq.current
     setLoading(true)
     api
-      .get(`/stats?from=${from}&to=${to}${groupId ? `&group_id=${groupId}` : ""}`)
+      .get(`/stats?from=${from}&to=${to}`)
       .then((s) => { if (id === seq.current) { setStats(s); setLoading(false) } })
       .catch((e) => { if (id === seq.current) { toast.error(e.message); setLoading(false) } })
-  }, [from, to, groupId, rangeOk])
+  }, [from, to, gid, rangeOk])
 
   // backend without `detail` (older build) → plain member view with the same payload
   if (stats && !stats.detail) return <SimpleView preloaded={stats} />
@@ -268,17 +267,6 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
               إلى
               <Input type="date" value={to} min={from || undefined} max={today} onChange={(e) => setTo(e.target.value)} className="h-11 sm:h-9" />
             </label>
-            {isSuper && (
-              <Select value={groupId || "all"} onValueChange={(v) => setGroupId(v === "all" ? "" : v)}>
-                <SelectTrigger className="h-11 w-full sm:h-9 sm:w-44" aria-label="المجموعة">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">كل المجموعات</SelectItem>
-                  {groups.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            )}
             {!rangeOk && <span className="text-xs text-destructive">اختر تاريخين صالحين بحيث «من» لا يتجاوز «إلى».</span>}
           </div>
         </CardHeader>

@@ -20,6 +20,7 @@ import {
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -52,7 +53,6 @@ const PAGE_SIZES = [25, 50, 100]
 
 type UserRow = { id: number; name: string }
 type AccountType = { id: number; name: string }
-type Group = { id: number; name: string }
 type Cell = string | number | boolean | null
 type Report = { sheet: string; title: string; columns: string[]; rows: Cell[][]; total: number }
 
@@ -259,10 +259,8 @@ export default function Export() {
   const [active, setActive] = useState(SHEETS[0].key)
   const [users, setUsers] = useState<UserRow[]>([])
   const [types, setTypes] = useState<AccountType[]>([])
-  const [groups, setGroups] = useState<Group[]>([])
   const [userIds, setUserIds] = useState(new Set<number>())
   const [typeIds, setTypeIds] = useState(new Set<number>())
-  const [groupId, setGroupId] = useState("")
   const [from, setFrom] = useState("")
   const [to, setTo] = useState("")
   const [busy, setBusy] = useState(false)
@@ -277,22 +275,19 @@ export default function Export() {
     if (typeIds.size) p.set("type_ids", [...typeIds].join(","))
     if (from) p.set("from", from)
     if (to) p.set("to", to)
-    if (isSuper && groupId) p.set("group_id", groupId)
     return p
   }
   const filterKey = filterParams().toString()
 
-  useEffect(() => {
-    if (isSuper) api.get("/groups").then(setGroups).catch(() => {})
-  }, [])
+  // the report always covers the active workspace (api.ts carries it); the switcher is the group control
+  const { gid, active: activeGroup } = useScope()
 
   useEffect(() => {
-    const q = isSuper && groupId ? `?group_id=${groupId}` : ""
-    api.get(`/users${q}`).then(setUsers).catch(() => setUsers([]))
-    api.get(`/types${q}`).then(setTypes).catch(() => setTypes([]))
+    api.get("/users").then(setUsers).catch(() => setUsers([]))
+    api.get("/types").then(setTypes).catch(() => setTypes([]))
     setUserIds(new Set())
     setTypeIds(new Set())
-  }, [groupId])
+  }, [gid])
 
   useEffect(() => setCounts({}), [filterKey])
 
@@ -338,7 +333,7 @@ export default function Export() {
     sheetCount(sheets.size),
     userIds.size ? `${userIds.size} مستخدم` : "كل المستخدمين",
     typeIds.size ? `${typeIds.size} نوع` : "كل الأنواع",
-    ...(isSuper ? [groups.find((g) => String(g.id) === groupId)?.name ?? "جميع المجموعات"] : []),
+    ...(isSuper ? [activeGroup?.name ?? "جميع المجموعات"] : []),
     ...(from || to ? [`${from || "…"} → ${to || "…"}`] : []),
   ].join(" · ")
 
@@ -356,22 +351,6 @@ export default function Export() {
           </div>
         </CardHeader>
         <CardContent className="grid gap-4 p-4 md:grid-cols-2 md:p-6 xl:grid-cols-4">
-          {isSuper && (
-            <div className="space-y-2">
-              <Label>المجموعة</Label>
-              <Select value={groupId || "all"} onValueChange={(v) => setGroupId(v === "all" ? "" : v)}>
-                <SelectTrigger className="h-11 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">جميع المجموعات</SelectItem>
-                  {groups.map((g) => (
-                    <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
           <div className="space-y-2">
             <Label>المستخدمون</Label>
             <CheckList prefix="user" items={users} selected={userIds} onChange={setUserIds} empty="لا يوجد مستخدمون" />

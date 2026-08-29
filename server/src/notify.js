@@ -24,8 +24,10 @@ const notify = (userIds, n, actorId = null) => {
   if (fresh.length) push(fresh, n).catch((e) => console.warn('push:', e.message));
 };
 
+// every active admin who LEADS this group (admin_groups is authoritative — an admin may lead several)
 const groupAdmins = (gid, exceptId) =>
-  db.prepare("SELECT id FROM users WHERE group_id = ? AND role = 'admin' AND active = 1 AND id != ?").all(gid, exceptId).map((u) => u.id);
+  db.prepare(`SELECT u.id FROM users u JOIN admin_groups ag ON ag.user_id = u.id
+    WHERE ag.group_id = ? AND u.role = 'admin' AND u.active = 1 AND u.id != ?`).all(gid, exceptId).map((u) => u.id);
 
 // local calendar day as YYYY-MM-DD (due_date is a client-local ISO date)
 const day = (offset = 0) => { const d = new Date(); d.setDate(d.getDate() + offset); return d.toLocaleDateString('en-CA'); };

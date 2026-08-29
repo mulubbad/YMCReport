@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { auth, resolveOwner } = require('../auth');
+const { auth, resolveOwner, scopeGid, canManage } = require('../auth');
 
 const r = express.Router();
 r.use(auth);
@@ -25,13 +25,14 @@ const linkedCounts = (rows) => rows.reduce((m, { mobile }) => {
   return n ? m.set(n, (m.get(n) || 0) + 1) : m;
 }, new Map());
 
-// scope like /accounts: user -> own, admin -> group (+?user_id), super -> all (+?group_id/?user_id). `t` = row alias, owner joined as `u`
-function scopeWhere(me, query, t) {
+// scope like /accounts: user -> own, leader -> the active group (+?user_id), super -> all (+?group_id/?user_id).
+// `t` = row alias, owner joined as `u`; `gid` is the already-resolved active group (null = every group).
+function scopeWhere(me, query, t, gid) {
   const where = [], args = [];
   if (me.role === 'user') { where.push(`${t}.user_id = ?`); args.push(me.id); }
   else {
-    if (me.role === 'admin') { where.push('u.group_id = ?'); args.push(me.group_id); }
-    else if (query.group_id) { where.push('u.group_id = ?'); args.push(query.group_id); }
+    if (gid) { where.push('u.group_id = ?'); args.push(gid); }
+    else if (me.role === 'admin') { where.push('0'); }   // group-less admin leads nothing
     if (query.user_id) { where.push(`${t}.user_id = ?`); args.push(query.user_id); }
   }
   return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', args };
@@ -43,10 +44,10 @@ const SIM_SQL = `SELECT s.*, u.name AS owner_name, u.group_id AS owner_group,
 const getSim = (id) => db.prepare(`${SIM_SQL} WHERE s.id = ?`).get(id);
 
 const canAccess = (me, sim) =>
-  me.role === 'super' || (me.role === 'admin' ? sim.owner_group === me.group_id : sim.user_id === me.id);
+  me.role === 'super' || (me.role === 'admin' ? canManage(me, sim.owner_group) : sim.user_id === me.id);
 
-function withLinked(me, query, rows) {
-  const a = scopeWhere(me, query, 'a');
+function withLinked(me, query, rows, gid) {
+  const a = scopeWhere(me, query, 'a', gid);
   const n = linkedCounts(db.prepare(`SELECT a.mobile FROM accounts a JOIN users u ON u.id = a.user_id ${a.sql}`).all(...a.args));
   return rows.map(({ owner_group, ...x }) => ({ ...x, linked_accounts: n.get(x.number) || 0 }));
 }
@@ -70,9 +71,11 @@ const unique = (res, fn) => {
 };
 
 r.get('/sims', (req, res) => {
-  const s = scopeWhere(req.user, req.query, 's');
+  const gid = scopeGid(req, res);
+  if (gid === false) return;
+  const s = scopeWhere(req.user, req.query, 's', gid);
   const rows = db.prepare(`${SIM_SQL} ${s.sql} ORDER BY s.created_at DESC`).all(...s.args);
-  res.json(withLinked(req.user, req.query, rows));
+  res.json(withLinked(req.user, req.query, rows, gid));
 });
 
 r.post('/sims', (req, res) => {
@@ -84,7 +87,7 @@ r.post('/sims', (req, res) => {
   if (typeof v === 'string') return res.status(400).json({ error: v });
   const id = unique(res, () => db.prepare('INSERT INTO sim_lines (user_id, number, carrier, status, holder_name, notes) VALUES (?,?,?,?,?,?)')
     .run(userId, v.number, v.carrier, v.status, v.holder_name, v.notes).lastInsertRowid);
-  if (id != null) res.json(withLinked(me, {}, [getSim(id)])[0]);
+  if (id != null) { const row = getSim(id); res.json(withLinked(me, {}, [row], row.owner_group)[0]); }
 });
 
 r.put('/sims/:id', (req, res) => {
@@ -98,7 +101,7 @@ r.put('/sims/:id', (req, res) => {
   if (typeof v === 'string') return res.status(400).json({ error: v });
   const ok = unique(res, () => db.prepare(`UPDATE sim_lines SET user_id = ?, number = ?, carrier = ?, status = ?, holder_name = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
     .run(userId, v.number, v.carrier, v.status, v.holder_name, v.notes, sim.id));
-  if (ok) res.json(withLinked(req.user, {}, [getSim(sim.id)])[0]);
+  if (ok) { const row = getSim(sim.id); res.json(withLinked(req.user, {}, [row], row.owner_group)[0]); }
 });
 
 r.delete('/sims/:id', (req, res) => {

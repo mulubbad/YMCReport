@@ -3,16 +3,10 @@ import { ExternalLink, Globe, Pencil, Plus, Tags, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,7 +40,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 type AccountType = { id: number; name: string; allows_pages: number }
 type Site = { id: number; name: string; url: string | null }
-type Group = { id: number; name: string }
 
 const thClass =
   "[&_th]:px-4 md:[&_th]:px-6 [&_th]:text-xs [&_th]:font-semibold [&_th]:uppercase [&_th]:tracking-wide [&_th]:text-muted-foreground"
@@ -443,19 +436,9 @@ const tabClass =
 
 export default function Settings() {
   const isSuper = useAuth().user!.role === "super"
-  const [groups, setGroups] = useState<Group[]>([])
-  const [gid, setGid] = useState("")
-
-  useEffect(() => {
-    if (isSuper)
-      api
-        .get("/groups")
-        .then((gs: Group[]) => {
-          setGroups(gs)
-          if (gs[0]) setGid(String(gs[0].id))
-        })
-        .catch((e) => toast.error(e.message))
-  }, [])
+  // types + sites belong to the active workspace; the sidebar switcher is the only group control
+  const { gid: activeGid, active } = useScope()
+  const gid = activeGid ? String(activeGid) : ""
 
   return (
     <Tabs defaultValue="types" className="gap-0">
@@ -471,24 +454,17 @@ export default function Settings() {
               المواقع
             </TabsTrigger>
           </TabsList>
-          {isSuper && (
-            <Select value={gid} onValueChange={setGid}>
-              <SelectTrigger className="mb-3 w-full sm:w-48" aria-label="المجموعة">
-                <SelectValue placeholder="اختر مجموعة" />
-              </SelectTrigger>
-              <SelectContent>
-                {groups.map((g) => (
-                  <SelectItem key={g.id} value={String(g.id)}>
-                    {g.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          {active && (
+            <span className="mb-3 text-xs text-muted-foreground">
+              مجموعة <span className="font-semibold text-foreground">{active.name}</span>
+            </span>
           )}
         </CardHeader>
         <CardContent className="p-0">
           {isSuper && !gid ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">أنشئ مجموعة أولًا.</p>
+            <p className="p-6 text-center text-sm text-muted-foreground">
+              اختر مجموعة من مبدّل مساحة العمل في القائمة الجانبية.
+            </p>
           ) : (
             <>
               <TabsContent value="types">

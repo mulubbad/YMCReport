@@ -9,7 +9,7 @@ Work-tracking system: groups of users manage social accounts and complete admin-
 
 ## Roles
 - `super` — everything, across all groups. Seeded on first run: username `super` / password `super123` (log it on create).
-- `admin` — manages ONE group: its users (role `user` only), account types, sites, tasks; sees all group accounts; exports.
+- `admin` — group leader. Manages **one or more groups** (table `admin_groups`), one active at a time — see *Multi-group leadership*. Inside the active group: its users (role `user` only, incl. username/password/active and their profile-change requests), account types, sites, tasks, all accounts and SIM lines, the manager dashboard and the Excel export. Never sees a group they do not lead.
 - `user` — manages own social accounts + pages; checks off tasks with notes.
 
 ## SQLite schema
@@ -90,6 +90,13 @@ CREATE TABLE interactions (            -- per-user done/notes, per task or per s
   actions_done TEXT,                   -- JSON array ⊆ the subtask's actions, nullable
   updated_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE UNIQUE INDEX ux_interaction ON interactions(task_id, user_id, COALESCE(subtask_id, 0));
+-- chat_reads is keyed by (user_id, group_id): a leader sits in several rooms, so one pointer per room
+-- (db.js rebuilds the legacy user-only table once, seeding each pointer into that user's own group)
+CREATE TABLE admin_groups (            -- which groups an admin leads (users.group_id stays their DEFAULT one)
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, group_id));
+-- db.js backfills it once from users.group_id for every existing admin
 ```
 
 ## API (all under `/api`, JSON)
@@ -258,3 +265,52 @@ UI: form has a "مهمة يومية متكررة" switch (hides الاستحقا
 
 ## Progress visibility (least privilege)
 Peers' progress is a **group-admin permission**. For role `user`, the server itself redacts: GET /tasks rows carry `done_ids: []` and `progress: {done:0,total:0}` (own `mine`/`my_streak` untouched); GET /tasks/team returns member names only (`done`/`total` = 0 — names still feed @mentions and private-message recipients). UI accordingly: team-pulse card, card avatar-stack/"n/N أنجزوا", and the popup's إنجاز الفريق roster render for admin/super only; members keep their own state, discussion, and رسالة خاصة. Admin/super views unchanged.
+
+## Multi-group leadership (encapsulated group workspaces)
+An admin may lead SEVERAL groups. Each group is a self-contained workspace: exactly one is **active** per request, and
+every screen — members, accounts, SIM lines, tasks, chat, dashboard, reports, export — shows only that group. An admin
+is effectively a super restricted to their own set; a member is unaffected (still exactly one group).
+
+**Server** — `server/src/auth.js` owns the whole rule; no route re-implements it:
+- `managedIds(me)` → super `null` (= every group) · admin `admin_groups` rows · member `[group_id]`.
+- `canManage(me, gid)` → guards every id-addressed row (user, account, page, SIM, note, task, type, site, activity).
+  It replaced the old `row.group_id === me.group_id` comparisons, which also closes a `NULL === NULL` hole that let a
+  group-less admin reach group-less users' rows.
+- `scopeGid(req, res)` → the active group: `?group_id` when the caller leads it, else their default (`users.group_id`,
+  falling back to the first led group); super with no `?group_id` → `null` = all groups. An unled `?group_id` → 403
+  (`FORBIDDEN`); callers do `if (gid === false) return;`.
+- `setManagedGroups(userId, ids)` — super only, via `POST/PUT /users` `group_ids: number[]`; the row's own `group_id`
+  is always kept in the set. Changing an admin's role or default group re-syncs it.
+Every group-scoped endpoint now resolves through `scopeGid`, so `?group_id=` works for admins exactly as it did for
+super: `/users`, `/types`, `/sites`, `/accounts`, `/sims`, `/tasks`, `/tasks/team`, `/stats`, `/report`, `/export`,
+`/activity/summary`, `/chat/*`, `/profile/requests`. `notify.js → groupAdmins(gid)` reads `admin_groups`, so a
+co-leader whose default group differs still gets that group's notifications; `POST /tasks` and `roomUsers()` include
+them too.
+
+**API deltas**
+| Endpoint | Change |
+|---|---|
+| `GET /groups` | now `admin`+`super`. Admin → only led groups. Rows add `member_count`, `account_count`, `sim_count`, `task_count` (the workspace cards). Create/update/delete stay super-only. |
+| `POST/PUT /users` | `group_ids: number[]` (super) sets which groups an admin leads; the response row carries `group_ids` for admins. `username` is now writable by admin (own-group members) and super — a duplicate returns 400 «اسم المستخدم مستخدم بالفعل». Self-service still goes through `/profile/requests` (`self` may only change `password`). |
+| `GET /profile/requests` | member → own history; leader → the **active group's** requests plus their own; super with no group → all. |
+| `PUT /profile/requests/:id` | now `admin`+`super`. An admin may decide requests from `role: 'user'` members of a group they lead, never their own request. |
+| `POST /profile/requests` | notifies the requester's group leaders (`groupAdmins`) as well as the supers. |
+| `GET /tasks/:id/interactions` | day-scoped (`AND i.day = dayKeyOf(task)`) like every other completion helper — a daily task no longer reports yesterday's completions in تفاصيل الإنجاز. |
+| `GET /chat/*` | the room resolves through `scopeGid` like everything else — any group the caller leads, never the token's stale `group_id`. `GET /chat/members` also lists admins who lead the room from another default group. `PUT /chat/read` now resolves the room and upserts on `(user_id, group_id)`; `/stats`'s `chat_unread` reads that per-room pointer, so marking one room read no longer clears another's badge. |
+| `PUT /tasks/:id/interactions` | uses `inScope` like its siblings (was the last raw `req.user.group_id === task.group_id` check) — a leader may tick a task in any group they lead, and a stale token cannot write into a group they left. |
+| `GET /stats` | `detail` is empty for a leader with no active group — only a super with no `?group_id` gets the all-groups block. |
+
+**Frontend** — `dashboard/src/lib/scope.tsx` (`ScopeProvider` / `useScope`) loads `/groups`, holds the active `gid`
+(persisted in `localStorage.ymc:gid`; admin defaults to their first group, super to «كل المجموعات»), and writes it into
+`lib/api.ts` via `setActiveGroup`. `api.ts` then appends `?group_id=` to **every** request whose path does not already
+name one — so no page carries group logic. `App.tsx` keys the routed subtree on `gid`, so switching workspace remounts
+the page and every screen refetches. Because of this the per-page group `<Select>`s (Dashboard, Export, Settings, Chat,
+Users) were removed; the single control is the **workspace switcher** in the sidebar under the brand (avatar tile +
+group name + «مساحة العمل»; a dropdown listing led groups with member counts + «إدارة المجموعات» when there is more
+than one, a plain label when there is one). The header breadcrumb becomes «الرئيسية / {group} / {page}» so the active
+workspace stays visible on mobile, where the sidebar is a drawer. `/groups` is now an admin+super route rendering a
+card grid of led groups — per-group counts (الأعضاء / الحسابات / خطوط الاتصال / مهام نشطة), «الدخول إلى المجموعة»
+(sets the scope and navigates), quick links to that group's المستخدمون / المهام / التقارير, and super's create / edit /
+delete. `Users.tsx` renders `RequestsPanel` for every leader, keeps the username field editable, and offers super a
+«المجموعات التي يديرها» checkbox list when the role is `admin`. Chat passes the active `gid` to its `EventSource`
+explicitly (the SSE URL bypasses `api.ts`).

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { Check, CheckCircle2, ChevronDown, Clock, History, UserRoundPen, X, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
+import { useAuth } from "@/lib/auth"
 import { fullDate, relTime } from "@/lib/time"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -29,6 +30,7 @@ export type ProfileRequest = {
   user_name: string
   user_username: string
   reviewer_name: string | null
+  user_role: "super" | "admin" | "user"
 }
 
 const STATUS = {
@@ -65,8 +67,10 @@ export function ChangeLines({ changes }: { changes: ProfileRequest["changes"] })
   )
 }
 
-// super-only review panel: pending requests with approve/decline + collapsible history
+// review panel for every leader: pending requests with approve/decline + collapsible history.
+// A group admin may only decide a member's request — never their own, never another leader's.
 export function RequestsPanel({ onUserChanged }: { onUserChanged: () => void }) {
+  const me = useAuth().user!
   const [rows, setRows] = useState<ProfileRequest[]>([])
   const [declining, setDeclining] = useState<ProfileRequest | null>(null)
   const [note, setNote] = useState("")
@@ -134,14 +138,20 @@ export function RequestsPanel({ onUserChanged }: { onUserChanged: () => void }) 
                   <ChangeLines changes={r.changes} />
                 </div>
                 <div className="flex shrink-0 gap-2">
-                  <Button size="sm" disabled={busy} onClick={() => review(r, "approved")}>
-                    <Check />
-                    موافقة
-                  </Button>
-                  <Button size="sm" variant="outline" className="text-destructive" disabled={busy} onClick={() => setDeclining(r)}>
-                    <X />
-                    رفض
-                  </Button>
+                  {me.role === "super" || (r.user_role === "user" && r.user_id !== me.id) ? (
+                    <>
+                      <Button size="sm" disabled={busy} onClick={() => review(r, "approved")}>
+                        <Check />
+                        موافقة
+                      </Button>
+                      <Button size="sm" variant="outline" className="text-destructive" disabled={busy} onClick={() => setDeclining(r)}>
+                        <X />
+                        رفض
+                      </Button>
+                    </>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">بانتظار مراجعة المشرف العام</span>
+                  )}
                 </div>
               </div>
             ))}

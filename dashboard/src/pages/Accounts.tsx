@@ -78,9 +78,10 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { NotesButton, NotesThread } from "@/components/NotesThread"
-import { OwnerOptions, type OwnerGroup } from "@/components/OwnerOptions"
+import { OwnerOptions } from "@/components/OwnerOptions"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
 import { daysSince, fullDate, relDays, relTime, toDate } from "@/lib/time"
 import { cn } from "@/lib/utils"
 
@@ -408,7 +409,9 @@ export default function Accounts() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
   const [users, setUsers] = useState<UserRow[]>([])
-  const [groups, setGroups] = useState<OwnerGroup[]>([])
+  // owner lists are sectioned by group only when the view spans several (super, all groups)
+  const { groups: scopeGroups, gid: activeGid } = useScope()
+  const groups = activeGid ? [] : scopeGroups
   const [filterUser, setFilterUser] = useState("all")
   const [q, setQ] = useState("")
   const [filterType, setFilterType] = useState("all")
@@ -452,7 +455,6 @@ export default function Accounts() {
 
   useEffect(() => {
     if (isAdmin) api.get("/users").then(setUsers).catch((e) => toast.error(e.message))
-    if (me.role === "super") api.get("/groups").then(setGroups).catch((e) => toast.error(e.message))
   }, [isAdmin, me.role])
 
   const ownerOptions = <OwnerOptions users={users} groups={groups} meId={me.id} />

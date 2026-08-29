@@ -3,6 +3,7 @@ import { toast } from "sonner"
 import {
   Archive,
   ArchiveRestore,
+  CalendarDays,
   Check,
   ClipboardList,
   Kanban,
@@ -20,6 +21,8 @@ import {
 } from "lucide-react"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
+import { TaskDailyDialog } from "@/components/TaskDailyDialog"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -91,7 +94,6 @@ import { TeamPulse } from "@/components/tasks/TeamPulse"
 import { CHECK_CLS, DoneText, TaskDetailDialog, dueChip, useMine } from "@/components/tasks/TaskDetail"
 
 type AccountType = { id: number; name: string; group_id: number }
-type Group = { id: number; name: string }
 type IRow = {
   user_id: number
   user_name: string
@@ -122,6 +124,7 @@ function TaskCard({
   onEdit,
   onArchive,
   onDelete,
+  onDaily,
 }: {
   t: Task
   ro: boolean
@@ -134,6 +137,7 @@ function TaskCard({
   onEdit: (t: Task) => void
   onArchive: (t: Task, archived: 0 | 1) => void
   onDelete: (t: Task) => void
+  onDaily: (t: Task) => void
 }) {
   // quick toggle for tasks without subtasks; subtask work happens in the detail popup
   // (cards remount when the popup closes, so server state is picked up — see `ver` in Tasks)
@@ -287,6 +291,12 @@ function TaskCard({
                   <Users />
                   تفاصيل الإنجاز
                 </DropdownMenuItem>
+                {daily && (
+                  <DropdownMenuItem className="cursor-pointer" onSelect={() => onDaily(t)}>
+                    <CalendarDays />
+                    سجل الأيام
+                  </DropdownMenuItem>
+                )}
                 {!ro && (
                   <DropdownMenuItem className="cursor-pointer" onSelect={() => onEdit(t)}>
                     <Pencil />
@@ -345,7 +355,7 @@ export default function Tasks() {
   const [teams, setTeams] = useState<Record<number, Team>>({}) // super: one team per group seen in the lists
   const [filters, setFilters] = useState<Filters>(NO_FILTERS)
   const [types, setTypes] = useState<AccountType[]>([])
-  const [groups, setGroups] = useState<Group[]>([])
+  const { groups, gid: activeGid } = useScope()   // the workspace switcher owns the group
   const [form, setForm] = useState<Form | null>(null)
   const [saving, setSaving] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -402,7 +412,6 @@ export default function Tasks() {
     loadTeam()
     // super: unscoped list of all groups' types, used for display + per-group filtering in the form
     api.get("/types").then(setTypes).catch(() => setTypes([]))
-    if (isSuper) api.get("/groups").then(setGroups).catch(() => {})
     // any save (own toggles included) fires ymc:refresh → keep team board, avatars and lanes live
     const onRefresh = () => {
       loadTeam()
@@ -620,6 +629,7 @@ export default function Tasks() {
 
   // live object for the popup (comment counts / progress refresh while it is open)
   const detailTask = detail ? ((list ?? []).find((x) => x.id === detail.id) ?? detail) : null
+  const [dailyTask, setDailyTask] = useState<Task | null>(null)
 
   const card = (t: Task) => (
     <TaskCard
@@ -635,6 +645,7 @@ export default function Tasks() {
       onEdit={openEdit}
       onArchive={setArchived}
       onDelete={setDelTask}
+      onDaily={setDailyTask}
     />
   )
 
@@ -696,7 +707,7 @@ export default function Tasks() {
               className="min-h-11 w-full cursor-pointer sm:w-auto"
               onClick={() =>
                 setForm({
-                  group_id: "",
+                  group_id: activeGid ? String(activeGid) : "",
                   kind: "general",
                   title: "",
                   description: "",
@@ -1162,6 +1173,8 @@ export default function Tasks() {
           setDelTask(t)
         }}
       />
+
+      <TaskDailyDialog task={dailyTask} onClose={() => setDailyTask(null)} />
 
       {/* responses: every member with a status badge — pending members are as visible as done ones */}
       <Dialog open={!!respTask} onOpenChange={(o) => !o && setRespTask(null)}>

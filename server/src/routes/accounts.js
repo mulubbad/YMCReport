@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { auth, requireRole, resolveOwner } = require('../auth');
+const { auth, resolveOwner, scopeGid, canManage } = require('../auth');
 const { notify, groupAdmins, day } = require('../notify');
 
 const r = express.Router();
@@ -42,7 +42,7 @@ const getPageRow = (id) => db.prepare('SELECT * FROM pages WHERE id = ?').get(id
 
 const canAccess = (me, acc) =>
   me.role === 'super' ||
-  (me.role === 'admin' ? acc.owner_group === me.group_id : acc.user_id === me.id);
+  (me.role === 'admin' ? canManage(me, acc.owner_group) : acc.user_id === me.id);
 
 const FORBIDDEN = { error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' };
 
@@ -113,11 +113,11 @@ r.get('/accounts', (req, res) => {
   const me = req.user;
   const where = [], args = [];
   if (me.role === 'user') { where.push('a.user_id = ?'); args.push(me.id); }
-  else if (me.role === 'admin') {
-    where.push('u.group_id = ?'); args.push(me.group_id);
-    if (req.query.user_id) { where.push('a.user_id = ?'); args.push(req.query.user_id); }
-  } else {
-    if (req.query.group_id) { where.push('u.group_id = ?'); args.push(req.query.group_id); }
+  else {
+    const gid = scopeGid(req, res);           // admin: the active group; super: ?group_id or all
+    if (gid === false) return;
+    if (me.role === 'admin' && !gid) return res.json([]);
+    if (gid) { where.push('u.group_id = ?'); args.push(gid); }
     if (req.query.user_id) { where.push('a.user_id = ?'); args.push(req.query.user_id); }
   }
   const sql = `${ACCOUNT_SQL} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY a.created_at DESC`;

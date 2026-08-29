@@ -1,7 +1,7 @@
 const express = require('express');
 const ExcelJS = require('exceljs');
 const db = require('../db');
-const { auth, requireRole } = require('../auth');
+const { auth, requireRole, scopeGid } = require('../auth');
 const { members, taskDone } = require('./tasks');
 const { STATUS_AR, EVENT_AR } = require('./accounts');
 const { STATUS_AR: SIM_STATUS_AR, CARRIER_AR, linkedCounts } = require('./sims');
@@ -173,9 +173,11 @@ const SHEETS = {
   },
 };
 
-// shared filters; admin pinned to own group, null gid = all groups (super only). Sends 403 + returns null when unscoped.
+// shared filters; admin pinned to the group they are working in, null gid = all groups (super only).
+// Sends 403 + returns null when unscoped.
 function scope(req, res) {
-  const gid = req.user.role === 'admin' ? req.user.group_id : (req.query.group_id ? Number(req.query.group_id) : null);
+  const gid = scopeGid(req, res);
+  if (gid === false) return null;
   if (gid == null && req.user.role !== 'super') { res.status(403).json({ error: 'لا توجد مجموعة مرتبطة بحسابك' }); return null; }
   return { gid, userIds: csvNums(req.query.user_ids), typeIds: csvNums(req.query.type_ids), from: req.query.from, to: req.query.to };
 }

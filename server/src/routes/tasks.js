@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { auth, requireRole } = require('../auth');
+const { auth, requireRole, scopeGid, canManage, FORBIDDEN } = require('../auth');
 const { notify, groupAdmins, day } = require('../notify');
 const { STATUS_AR } = require('./accounts');
 
@@ -113,10 +113,12 @@ function serializeTask(t, caller) {
 
 const getTask = (id) => db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
 
-const inScope = (me, task) => me.role === 'super' || task.group_id === me.group_id;
+// canManage() already means "own group" for a member, "any led group" for an admin, "all" for super
+const inScope = (me, task) => canManage(me, task.group_id);
 
 r.get('/tasks', (req, res) => {
-  const gid = req.user.role === 'super' ? req.query.group_id : req.user.group_id;
+  const gid = scopeGid(req, res);
+  if (gid === false) return;
   if (!gid && req.user.role !== 'super') return res.json([]);
   const archived = req.query.archived === '1' ? 1 : 0;
   const tasks = gid
@@ -127,7 +129,15 @@ r.get('/tasks', (req, res) => {
 
 r.post('/tasks', requireRole('admin', 'super'), (req, res) => {
   const b = req.body || {};
-  const gid = req.user.role === 'admin' ? req.user.group_id : b.group_id;
+  let gid;
+  if (req.user.role === 'super') gid = b.group_id;
+  else if (b.group_id != null) {                       // admin naming a group explicitly: must be one they lead
+    if (!canManage(req.user, b.group_id)) return res.status(403).json(FORBIDDEN);
+    gid = Number(b.group_id);
+  } else {
+    gid = scopeGid(req, res);
+    if (gid === false) return;
+  }
   if (!gid) return res.status(400).json({ error: 'يجب تحديد المجموعة' });
   if (!KINDS.includes(b.kind)) return res.status(400).json({ error: 'نوع المهمة غير صالح' });
   if (!b.title) return res.status(400).json({ error: 'عنوان المهمة مطلوب' });
@@ -149,7 +159,9 @@ r.post('/tasks', requireRole('admin', 'super'), (req, res) => {
     for (const s of b.subtasks || []) if (s.title) ins.run(info.lastInsertRowid, s.title, s.url ?? null, actionsJson(s.actions));
     return info.lastInsertRowid;
   })();
-  notify(db.prepare('SELECT id FROM users WHERE group_id = ? AND active = 1 AND id != ?').all(gid, req.user.id).map((u) => u.id), {
+  // everyone in the room: the group's own users + admins who lead it from another default group
+  notify(db.prepare(`SELECT id FROM users WHERE active = 1 AND id != ?
+    AND (group_id = ? OR id IN (SELECT user_id FROM admin_groups WHERE group_id = ?))`).all(req.user.id, gid, gid).map((u) => u.id), {
     key: `task:${id}:new`, kind: 'task_new', title: `مهمة جديدة: ${b.title}`,
     body: [KIND_AR[b.kind], rep.repeat ? 'مهمة يومية متكررة' : b.due_date && `الاستحقاق ${b.due_date}`].filter(Boolean).join('، '), link: '/tasks',
   }, req.user.id);
@@ -225,14 +237,44 @@ r.get('/tasks/:id/interactions', requireRole('admin', 'super'), (req, res) => {
   res.json(db.prepare(`
     SELECT i.*, u.name AS user_name, s.title AS subtask_title
     FROM interactions i JOIN users u ON u.id = i.user_id LEFT JOIN subtasks s ON s.id = i.subtask_id
-    WHERE i.task_id = ? ORDER BY i.day DESC, u.name, i.subtask_id`).all(task.id)
+    WHERE i.task_id = ? AND i.day = ? ORDER BY u.name, i.subtask_id`).all(task.id, dayKeyOf(task.id))
     .map((i) => ({ ...i, actions_done: parseArr(i.actions_done) })));
+});
+
+// per-day completion history of a daily task (admin view): who finished it each day in the range
+r.get('/tasks/:id/daily', requireRole('admin', 'super'), (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'المهمة غير موجودة' });
+  if (!inScope(req.user, task)) return res.status(403).json(FORBIDDEN);
+  if (!isDaily(task)) return res.status(400).json({ error: 'هذه ليست مهمة يومية' });
+  const rng = dateRange(req.query); // defaults to the last 30 days
+  if (rng.error) return res.status(400).json({ error: rng.error });
+  const subCount = db.prepare('SELECT COUNT(*) c FROM subtasks WHERE task_id = ?').get(task.id).c;
+  const rows = subCount === 0
+    ? db.prepare(`SELECT day, user_id FROM interactions
+        WHERE task_id = ? AND done = 1 AND subtask_id IS NULL AND day != '' AND day BETWEEN ? AND ?`)
+      .all(task.id, rng.from, rng.to)
+    : db.prepare(`SELECT day, user_id FROM interactions
+        WHERE task_id = ? AND done = 1 AND subtask_id IS NOT NULL AND day != '' AND day BETWEEN ? AND ?
+        GROUP BY day, user_id HAVING COUNT(DISTINCT subtask_id) = ?`)
+      .all(task.id, rng.from, rng.to, subCount);
+  const ids = new Set(members(task.group_id));
+  const nameOf = new Map(db.prepare('SELECT id, name FROM users WHERE group_id = ?').all(task.group_id).map((u) => [u.id, u.name]));
+  const byDay = new Map();
+  for (const x of rows) {
+    if (!ids.has(x.user_id)) continue;
+    if (!byDay.has(x.day)) byDay.set(x.day, []);
+    byDay.get(x.day).push(nameOf.get(x.user_id) ?? '');
+  }
+  const days = [...byDay.entries()].sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([d, names]) => ({ day: d, done: names.length, total: ids.size, names }));
+  res.json({ from: rng.from, to: rng.to, total: ids.size, days });
 });
 
 r.put('/tasks/:id/interactions', (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'المهمة غير موجودة' });
-  if (req.user.group_id !== task.group_id) return res.status(403).json({ error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' });
+  if (!inScope(req.user, task)) return res.status(403).json({ error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' });
   const b = req.body || {};
   const subtaskId = b.subtask_id ?? null;
   let required = []; // the subtask's declared actions; empty for task-level rows
@@ -281,7 +323,8 @@ r.put('/tasks/:id/interactions', (req, res) => {
 
 // team pulse: per-member completion over ACTIVE group tasks + people list (for @mentions)
 r.get('/tasks/team', (req, res) => {
-  const gid = req.user.role === 'super' ? Number(req.query.group_id) || null : req.user.group_id;
+  const gid = scopeGid(req, res);
+  if (gid === false) return;
   if (!gid) return res.json({ group: null, tasks: 0, members: [], admins: [] });
   const group = db.prepare('SELECT id, name FROM groups WHERE id = ?').get(gid) ?? null;
   const tasks = db.prepare('SELECT id FROM tasks WHERE group_id = ? AND archived = 0').all(gid);
@@ -394,9 +437,12 @@ function dateRange(q) {
 
 function dashboardDetail(me, { from, to }, groupId) {
   const today = day();
-  const groups = me.role === 'admin' || groupId
-    ? db.prepare('SELECT id, name FROM groups WHERE id = ?').all(me.role === 'admin' ? me.group_id : groupId)
-    : db.prepare('SELECT id, name FROM groups ORDER BY name').all();
+  // no active group means "every group" for a super ONLY — a leader with no group sees nothing, not everything
+  const groups = groupId
+    ? db.prepare('SELECT id, name FROM groups WHERE id = ?').all(groupId)
+    : me.role === 'super'
+      ? db.prepare('SELECT id, name FROM groups ORDER BY name').all()
+      : [];
   const gids = groups.map((g) => g.id);
   const gin = gids.length ? `u.group_id IN (${gids.map(() => '?').join(',')})` : '0';
   const inRange = (ts) => ts != null && ts.slice(0, 10) >= from && ts.slice(0, 10) <= to;
@@ -507,18 +553,19 @@ function dashboardDetail(me, { from, to }, groupId) {
 r.get('/stats', (req, res) => {
   const me = req.user;
   const onlyUser = me.role === 'user' ? me.id : null;
-  const gid = me.role === 'super' ? null : me.group_id;
-  // admin/super: validated range + detail block (admin pinned to own group; super may narrow with group_id)
+  const gid = scopeGid(req, res);   // admin: active group · super: ?group_id or null (= all) · member: own group
+  if (gid === false) return;
+  // admin/super: validated range + detail block, scoped to the active group (super with none = every group)
   let detail = null;
   if (!onlyUser) {
     const rng = dateRange(req.query);
     if (rng.error) return res.status(400).json({ error: rng.error });
-    detail = dashboardDetail(me, rng, me.role === 'super' ? Number(req.query.group_id) || null : null);
+    detail = dashboardDetail(me, rng, gid);
   }
-  // unread chat messages in my room (super: the ?group_id room), not mine, past my read pointer
-  const roomId = me.role === 'super' ? Number(req.query.group_id) || null : me.group_id;
+  // unread chat messages in the active room, not mine, past my read pointer
+  const roomId = gid;
   const chat_unread = roomId ? db.prepare(`SELECT COUNT(*) c FROM chat_messages WHERE group_id = ? AND deleted = 0 AND user_id != ?
-    AND id > COALESCE((SELECT last_read_id FROM chat_reads WHERE user_id = ?), 0)`).get(roomId, me.id, me.id).c : 0;
+    AND id > COALESCE((SELECT last_read_id FROM chat_reads WHERE user_id = ? AND group_id = ?), 0)`).get(roomId, me.id, me.id, roomId).c : 0;
   // groupless admin has empty scope, not global
   if (me.role === 'admin' && !gid)
     return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, accounts_by_type: [], chat_unread, detail });

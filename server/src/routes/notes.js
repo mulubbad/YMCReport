@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../db');
-const { auth } = require('../auth');
+const { auth, canManage } = require('../auth');
 const { notify, groupAdmins } = require('../notify');
 
 const r = express.Router();
@@ -20,7 +20,7 @@ const OWNER_SQL = {
 const resolveOwner = (type, id) => (OWNER_SQL[type] ? db.prepare(OWNER_SQL[type]).get(id) : null) ?? null;
 
 // thread access: owner, admins of the owner's group, super
-const canAccess = (me, o) => me.role === 'super' || (me.role === 'admin' ? o.group_id === me.group_id : o.user_id === me.id);
+const canAccess = (me, o) => me.role === 'super' || (me.role === 'admin' ? canManage(me, o.group_id) : o.user_id === me.id);
 
 // {type, id} from query/body → {type, id, user_id, group_id, name}; sends 400/404/403 and returns null otherwise
 function entity(req, res, src) {

@@ -17,10 +17,10 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
 import { cn } from "@/lib/utils"
 import { ROLE_LABEL, initials, notify, parseUtc } from "@/components/tasks/shared"
 import { Composer } from "@/components/chat/Composer"
@@ -110,14 +110,23 @@ export default function Chat() {
   const me = useAuth().user!
   const isSuper = me.role === "super"
   const [params, setParams] = useSearchParams()
-  const [groups, setGroups] = useState<{ id: number; name: string }[]>([])
-  const [groupId, setGroupId] = useState<number | undefined>(() => (isSuper && Number(params.get("group_id"))) || undefined)
-  const [groupName, setGroupName] = useState("")
-  const ready = !isSuper || !!groupId
-  // super scopes every call with ?group_id
-  const gq = useCallback(
-    (path: string) => (isSuper && groupId ? `${path}${path.includes("?") ? "&" : "?"}group_id=${groupId}` : path),
-    [isSuper, groupId],
+  // The room follows the workspace switcher, but is resolved LOCALLY: picking a room here must never
+  // rewrite the global workspace (a super browsing «كل المجموعات» would lose it everywhere else).
+  const { gid, active, groups, loading: scopeLoading } = useScope()
+  const urlGroup = Number(params.get("group_id")) || null
+  const room =
+    gid ??
+    (urlGroup && groups.some((g) => g.id === urlGroup) ? urlGroup : null) ??
+    (isSuper ? (groups[0]?.id ?? null) : null)
+  const groupId = room ?? undefined
+  const [teamName, setTeamName] = useState("")
+  const groupName = active?.name ?? groups.find((g) => g.id === room)?.name ?? teamName
+  const ready = isSuper ? !!room : !scopeLoading
+  // api.ts appends the ACTIVE group; when the room is local (super on «كل المجموعات», or a deep link)
+  // it has to be spelled out instead
+  const cq = useCallback(
+    (p: string) => (gid == null && room ? `${p}${p.includes("?") ? "&" : "?"}group_id=${room}` : p),
+    [gid, room],
   )
 
   const [members, setMembers] = useState<Member[]>([])
@@ -154,41 +163,30 @@ export default function Chat() {
       if (before) p.set("before", String(before))
       if (tag) p.set("tag", tag)
       if (q) p.set("q", q)
-      return gq(`/chat/messages?${p}`)
+      return cq(`/chat/messages?${p}`)
     },
-    [gq, q, tag],
+    [cq, q, tag],
   )
 
   const markRead = useCallback((id: number) => {
     if (id <= lastRead.current) return
     lastRead.current = id
-    api.put("/chat/read", { last_id: id }).then(notify).catch(() => {})
-  }, [])
-  const loadTags = useCallback(() => api.get(gq("/chat/tags")).then(setTags).catch(() => {}), [gq])
-  const loadPinned = useCallback(() => api.get(gq("/chat/pinned")).then(setPinned).catch(() => {}), [gq])
+    api.put(cq("/chat/read"), { last_id: id }).then(notify).catch(() => {})
+  }, [cq])
+  const loadTags = useCallback(() => api.get(cq("/chat/tags")).then(setTags).catch(() => {}), [cq])
+  const loadPinned = useCallback(() => api.get(cq("/chat/pinned")).then(setPinned).catch(() => {}), [cq])
   const patch = (id: number, p: Partial<ChatMsg>) => setMsgs((l) => l && l.map((m) => (m.id === id ? { ...m, ...p } : m)))
 
-  // group: super picks from /groups (URL ?group_id wins), others read their team name
+  // members have no switcher — read the room's name from their team
   useEffect(() => {
-    if (isSuper)
-      api
-        .get("/groups")
-        .then((gs: { id: number; name: string }[]) => {
-          setGroups(gs)
-          setGroupId((g) => g ?? gs[0]?.id)
-        })
-        .catch((e) => toast.error(e.message))
-    else api.get("/tasks/team").then((t) => setGroupName(t.group?.name ?? "")).catch(() => {})
-  }, [isSuper])
-  useEffect(() => {
-    if (isSuper && groupId) setGroupName(groups.find((g) => g.id === groupId)?.name ?? "")
-  }, [isSuper, groupId, groups])
+    if (!active) api.get("/tasks/team").then((t) => setTeamName(t.group?.name ?? "")).catch(() => {})
+  }, [active])
 
   // room data
   useEffect(() => {
     if (!ready) return
     api
-      .get(gq("/chat/members"))
+      .get(cq("/chat/members"))
       .then((ms: Member[]) => {
         setMembers(ms)
         setOnline(new Set(ms.filter((m) => m.online).map((m) => m.id)))
@@ -196,7 +194,7 @@ export default function Chat() {
       .catch((e) => toast.error(e.message))
     void loadTags()
     void loadPinned()
-  }, [ready, gq, loadTags, loadPinned])
+  }, [ready, cq, loadTags, loadPinned])
 
   // message list: reload from scratch when the room or a filter changes
   useEffect(() => {
@@ -301,7 +299,7 @@ export default function Chat() {
   }, [msgs, filtered, markRead])
 
   const reconnecting = useChatStream(
-    isSuper ? groupId : undefined,
+    groupId,
     {
       message: (m) => {
         if (m.hashtags?.length) void loadTags()
@@ -355,9 +353,9 @@ export default function Chat() {
     if (file) {
       const fd = new FormData()
       fd.append("file", file)
-      image_key = (await api.upload(gq("/chat/upload"), fd)).image_key
+      image_key = (await api.upload(cq("/chat/upload"), fd)).image_key
     }
-    const m: ChatMsg = await api.post(gq("/chat/messages"), { body: body || undefined, image_key })
+    const m: ChatMsg = await api.post(cq("/chat/messages"), { body: body || undefined, image_key })
     stick.current = true
     setMsgs((l) => (l?.some((x) => x.id === m.id) ? l : [...(l ?? []), m]))
     markRead(m.id)
@@ -426,26 +424,6 @@ export default function Chat() {
             </div>
           </div>
           <div className="ms-auto flex w-full flex-wrap items-center gap-2 sm:w-auto">
-            {isSuper && (
-              <Select
-                value={groupId ? String(groupId) : ""}
-                onValueChange={(v) => {
-                  setGroupId(Number(v))
-                  setParams({ group_id: v }, { replace: true })
-                }}
-              >
-                <SelectTrigger className="h-10 w-full sm:w-44" aria-label="المجموعة">
-                  <SelectValue placeholder="اختر مجموعة" />
-                </SelectTrigger>
-                <SelectContent>
-                  {groups.map((g) => (
-                    <SelectItem key={g.id} value={String(g.id)}>
-                      {g.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
             <div className="relative min-w-0 flex-1 sm:w-52 sm:flex-none">
               <Search className="pointer-events-none absolute top-1/2 start-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
               <Input

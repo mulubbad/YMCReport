@@ -3,6 +3,7 @@ import { Direction } from "radix-ui"
 import { Toaster } from "@/components/ui/sonner"
 import Layout from "@/components/Layout"
 import { AuthProvider, useAuth, type User } from "@/lib/auth"
+import { ScopeProvider, useScope } from "@/lib/scope"
 import Accounts from "@/pages/Accounts"
 import Chat from "@/pages/Chat"
 import Dashboard from "@/pages/Dashboard"
@@ -18,10 +19,14 @@ import Users from "@/pages/Users"
 
 function Protected() {
   const { user } = useAuth()
+  const { gid } = useScope()
   if (!user) return <Navigate to="/login" replace />
   return (
     <Layout>
-      <Outlet />
+      {/* switching workspace remounts the page, so every screen refetches inside the new group */}
+      <div key={gid ?? "all"} className="contents">
+        <Outlet />
+      </div>
     </Layout>
   )
 }
@@ -36,6 +41,7 @@ export default function App() {
   return (
     <Direction.Provider dir="rtl">
       <AuthProvider>
+        <ScopeProvider>
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
@@ -48,17 +54,16 @@ export default function App() {
               <Route path="/notifications" element={<Notifications />} />
               <Route path="/chat" element={<Chat />} />
               <Route element={<RequireRole roles={["admin", "super"]} />}>
+                <Route path="/groups" element={<Groups />} />
                 <Route path="/users" element={<Users />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/export" element={<Export />} />
-              </Route>
-              <Route element={<RequireRole roles={["super"]} />}>
-                <Route path="/groups" element={<Groups />} />
               </Route>
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
+        </ScopeProvider>
         <Toaster dir="rtl" />
       </AuthProvider>
     </Direction.Provider>

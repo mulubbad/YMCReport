@@ -166,8 +166,15 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE INDEX IF NOT EXISTS ix_chat_messages ON chat_messages(group_id, id);
 CREATE TABLE IF NOT EXISTS chat_reads (
-  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  last_read_id INTEGER NOT NULL DEFAULT 0);
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  last_read_id INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, group_id));
+CREATE TABLE IF NOT EXISTS admin_groups (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, group_id));
+CREATE INDEX IF NOT EXISTS ix_admin_groups_group ON admin_groups(group_id);
 `);
 
 // migrate pre-existing DBs: add tasks columns missing from older schemas
@@ -212,6 +219,24 @@ if ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '
     INSERT INTO notifications_new SELECT * FROM notifications; DROP TABLE notifications;
     ALTER TABLE notifications_new RENAME TO notifications;
     CREATE INDEX ix_notifications ON notifications(user_id, id);`))();
+
+// chat_reads used to hold ONE pointer per user (one group per user). A leader now sits in several rooms,
+// so rebuild it keyed by (user, room), seeding each legacy pointer into that user's own group.
+if (!db.prepare('PRAGMA table_info(chat_reads)').all().some((c) => c.name === 'group_id'))
+  db.transaction(() => db.exec(`CREATE TABLE chat_reads_new (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+      last_read_id INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, group_id));
+    INSERT INTO chat_reads_new (user_id, group_id, last_read_id)
+      SELECT c.user_id, u.group_id, c.last_read_id FROM chat_reads c JOIN users u ON u.id = c.user_id
+      WHERE u.group_id IS NOT NULL;
+    DROP TABLE chat_reads; ALTER TABLE chat_reads_new RENAME TO chat_reads;`))();
+
+// an admin may now lead several groups (admin_groups). Legacy DBs carry one group in users.group_id —
+// backfill it as a membership; users.group_id stays the admin's DEFAULT group. Idempotent.
+db.exec(`INSERT OR IGNORE INTO admin_groups (user_id, group_id)
+  SELECT id, group_id FROM users WHERE role = 'admin' AND group_id IS NOT NULL`);
 
 if (!db.prepare("SELECT 1 FROM users WHERE role = 'super'").get()) {
   db.prepare('INSERT INTO users (username, password_hash, name, role) VALUES (?,?,?,?)')

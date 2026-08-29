@@ -3,6 +3,7 @@ import { CheckCircle2, Copy, Eye, EyeOff, Pencil, Plus, Trash2, Users as UsersIc
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { useScope } from "@/lib/scope"
 import { fullDate, minutesSince, relTime } from "@/lib/time"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -34,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -53,10 +55,10 @@ type UserRow = {
   name: string
   role: "super" | "admin" | "user"
   group_id: number | null
+  group_ids?: number[]          // admins: every group they lead
   active: number
   last_seen_at: string | null
 }
-type Group = { id: number; name: string }
 
 const roleVariant = {
   super: "danger",
@@ -70,7 +72,7 @@ const roleLabel = {
   user: "عضو",
 } as const
 
-const emptyForm = { username: "", password: "", name: "", role: "user", group_id: "" }
+const emptyForm = { username: "", password: "", name: "", role: "user", group_id: "", group_ids: [] as number[] }
 
 // unambiguous alphabet (no 0/O, 1/l/I) so credentials survive being read aloud or handwritten
 const genPassword = () => {
@@ -115,9 +117,8 @@ const lastActive = (u: { last_seen_at: string | null }) =>
 export default function Users() {
   const me = useAuth().user!
   const isSuper = me.role === "super"
+  const { groups, reload: reloadGroups } = useScope()
   const [rows, setRows] = useState<UserRow[] | null>(null)
-  const [groups, setGroups] = useState<Group[]>([])
-  const [filterGroup, setFilterGroup] = useState("")
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<UserRow | null>(null)
   const [form, setForm] = useState(emptyForm)
@@ -140,7 +141,6 @@ export default function Users() {
 
   useEffect(() => {
     load()
-    if (isSuper) api.get("/groups").then(setGroups).catch(() => {})
     const t = setInterval(load, 60_000) // keep the monitor's last-active column fresh
     return () => clearInterval(t)
   }, [])
@@ -148,8 +148,7 @@ export default function Users() {
   const groupName = (id: number | null) =>
     groups.find((g) => g.id === id)?.name ?? "—"
 
-  // ponytail: client-side group filter; the /users call stays unchanged
-  const visible = rows?.filter((u) => !filterGroup || String(u.group_id) === filterGroup) ?? []
+  const visible = rows ?? []
 
   const openCreate = () => {
     setEditing(null)
@@ -166,6 +165,7 @@ export default function Users() {
       name: u.name,
       role: u.role,
       group_id: u.group_id ? String(u.group_id) : "",
+      group_ids: u.group_ids ?? (u.group_id ? [u.group_id] : []),
     })
     setOpen(true)
   }
@@ -175,11 +175,17 @@ export default function Users() {
     setBusy(true)
     try {
       const superFields = isSuper
-        ? { role: form.role, group_id: form.group_id ? Number(form.group_id) : null }
+        ? {
+            role: form.role,
+            group_id: form.group_id ? Number(form.group_id) : null,
+            // which groups this admin leads; ignored by the server for other roles
+            ...(form.role === "admin" ? { group_ids: form.group_ids } : {}),
+          }
         : {}
       if (editing) {
         await api.put(`/users/${editing.id}`, {
           name: form.name,
+          username: form.username,
           ...(form.password ? { password: form.password } : {}),
           ...superFields,
         })
@@ -195,6 +201,7 @@ export default function Users() {
       toast.success(editing ? "تم تحديث المستخدم" : "تم إنشاء المستخدم")
       setOpen(false)
       load()
+      if (isSuper) reloadGroups()   // led-group changes move the workspace switcher
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "حدث خطأ")
     } finally {
@@ -301,7 +308,7 @@ export default function Users() {
 
   return (
     <div className="space-y-4">
-      {isSuper && <RequestsPanel onUserChanged={load} />}
+      <RequestsPanel onUserChanged={load} />
       <Card className="gap-0 py-0">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 border-b px-4 py-4 md:px-6 [.border-b]:pb-4">
           <div>
@@ -311,21 +318,6 @@ export default function Users() {
             </div>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-            {isSuper && (
-              <Select value={filterGroup || "all"} onValueChange={(v) => setFilterGroup(v === "all" ? "" : v)}>
-                <SelectTrigger className="w-full sm:w-44" aria-label="تصفية حسب المجموعة">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">جميع المجموعات</SelectItem>
-                  {groups.map((g) => (
-                    <SelectItem key={g.id} value={String(g.id)}>
-                      {g.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
             <Button className="w-full sm:w-auto" onClick={openCreate}>
               <Plus />
               مستخدم جديد
@@ -438,7 +430,7 @@ export default function Users() {
                 <Input
                   id="u-username"
                   value={form.username}
-                  disabled={!!editing}
+                  dir="ltr"
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
                   required
                 />
@@ -522,6 +514,48 @@ export default function Users() {
                       </SelectContent>
                     </Select>
                   </div>
+                  {form.role === "admin" && (
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label>المجموعات التي يديرها</Label>
+                      <p className="text-xs text-muted-foreground">
+                        يدير كل مجموعة محدَّدة بالكامل، ويتنقّل بينها من مبدّل مساحة العمل. المجموعة
+                        الأساسية أعلاه تُضاف تلقائيًا.
+                      </p>
+                      <div className="grid gap-1 rounded-md border p-2 sm:grid-cols-2">
+                        {groups.length === 0 && (
+                          <span className="p-1 text-xs text-muted-foreground">لا توجد مجموعات بعد</span>
+                        )}
+                        {groups.map((g) => {
+                          const primary = String(g.id) === form.group_id
+                          const checked = primary || form.group_ids.includes(g.id)
+                          return (
+                            <label
+                              key={g.id}
+                              className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-secondary/60"
+                            >
+                              <Checkbox
+                                checked={checked}
+                                disabled={primary}
+                                aria-label={g.name}
+                                onCheckedChange={(c) =>
+                                  setForm((f) => ({
+                                    ...f,
+                                    group_ids: c
+                                      ? [...new Set([...f.group_ids, g.id])]
+                                      : f.group_ids.filter((x) => x !== g.id),
+                                  }))
+                                }
+                              />
+                              <span className="min-w-0 truncate">{g.name}</span>
+                              {primary && (
+                                <span className="ms-auto text-[11px] text-muted-foreground">أساسية</span>
+                              )}
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
