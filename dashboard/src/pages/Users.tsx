@@ -117,7 +117,9 @@ const lastActive = (u: { last_seen_at: string | null }) =>
 export default function Users() {
   const me = useAuth().user!
   const isSuper = me.role === "super"
-  const { groups, reload: reloadGroups } = useScope()
+  const { groups, gid, reload: reloadGroups } = useScope()
+  // an admin with no group leads nothing: creating a user would only 400, so say why instead
+  const noWorkspace = me.role === "admin" && !gid
   const [rows, setRows] = useState<UserRow[] | null>(null)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<UserRow | null>(null)
@@ -317,12 +319,14 @@ export default function Users() {
               {rows ? `${visible.length} مستخدم` : "جارٍ التحميل…"}
             </div>
           </div>
-          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-            <Button className="w-full sm:w-auto" onClick={openCreate}>
-              <Plus />
-              مستخدم جديد
-            </Button>
-          </div>
+          {!noWorkspace && (
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+              <Button className="w-full sm:w-auto" onClick={openCreate}>
+                <Plus />
+                مستخدم جديد
+              </Button>
+            </div>
+          )}
         </CardHeader>
 
         <CardContent className="p-0">
@@ -337,11 +341,17 @@ export default function Users() {
               <div className="flex size-14 items-center justify-center rounded-lg bg-primary-light text-primary">
                 <UsersIcon className="size-7" />
               </div>
-              <p className="text-sm text-muted-foreground">لا يوجد مستخدمون بعد</p>
-              <Button onClick={openCreate}>
-                <Plus />
-                مستخدم جديد
-              </Button>
+              <p className="text-sm text-muted-foreground">
+                {noWorkspace
+                  ? "لم تُسنَد إليك أي مجموعة بعد — تواصل مع المشرف العام لإسناد مجموعة إلى حسابك."
+                  : "لا يوجد مستخدمون بعد"}
+              </p>
+              {!noWorkspace && (
+                <Button onClick={openCreate}>
+                  <Plus />
+                  مستخدم جديد
+                </Button>
+              )}
             </div>
           ) : (
             <>

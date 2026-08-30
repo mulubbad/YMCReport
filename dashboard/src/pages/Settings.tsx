@@ -461,9 +461,13 @@ export default function Settings() {
           )}
         </CardHeader>
         <CardContent className="p-0">
-          {isSuper && !gid ? (
+          {/* types + sites belong to a group: without an active one there is nothing to edit, and the
+              add button would only 400 — say why instead of showing an empty table */}
+          {!gid ? (
             <p className="p-6 text-center text-sm text-muted-foreground">
-              اختر مجموعة من مبدّل مساحة العمل في القائمة الجانبية.
+              {isSuper
+                ? "اختر مجموعة من مبدّل مساحة العمل في القائمة الجانبية."
+                : "لم تُسنَد إليك أي مجموعة بعد — تواصل مع المشرف العام لإسناد مجموعة إلى حسابك."}
             </p>
           ) : (
             <>
