@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { auth, requireRole, scopeGid, canManage, FORBIDDEN } = require('../auth');
 const { notify, groupAdmins, day } = require('../notify');
+const { enabled: pushEnabled } = require('../push');
 const { STATUS_AR } = require('./accounts');
 
 const r = express.Router();
@@ -140,7 +141,8 @@ r.post('/tasks', requireRole('admin', 'super'), (req, res) => {
   }
   if (!gid) return res.status(400).json({ error: 'يجب تحديد المجموعة' });
   if (!KINDS.includes(b.kind)) return res.status(400).json({ error: 'نوع المهمة غير صالح' });
-  if (!b.title) return res.status(400).json({ error: 'عنوان المهمة مطلوب' });
+  if (typeof b.title !== 'string' || !b.title.trim()) return res.status(400).json({ error: 'عنوان المهمة مطلوب' });
+  if (b.title.length > 200) return res.status(400).json({ error: 'عنوان المهمة طويل جدًا (الحد 200 حرف)' });
   if (b.priority != null && !PRIORITIES.includes(b.priority)) return res.status(400).json({ error: 'الأولوية غير صالحة' });
   if (b.type_id) {
     const type = db.prepare('SELECT * FROM account_types WHERE id = ?').get(b.type_id);
@@ -173,6 +175,8 @@ r.put('/tasks/:id', requireRole('admin', 'super'), (req, res) => {
   if (!task) return res.status(404).json({ error: 'المهمة غير موجودة' });
   if (!inScope(req.user, task)) return res.status(403).json({ error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' });
   const b = req.body || {};
+  if ('title' in b && (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 200))
+    return res.status(400).json({ error: 'عنوان المهمة غير صالح (حتى 200 حرف)' });
   if (b.kind && !KINDS.includes(b.kind)) return res.status(400).json({ error: 'نوع المهمة غير صالح' });
   if (b.priority != null && !PRIORITIES.includes(b.priority)) return res.status(400).json({ error: 'الأولوية غير صالحة' });
   const type_id = 'type_id' in b ? b.type_id : task.type_id;
@@ -568,7 +572,7 @@ r.get('/stats', (req, res) => {
     AND id > COALESCE((SELECT last_read_id FROM chat_reads WHERE user_id = ? AND group_id = ?), 0)`).get(roomId, me.id, me.id, roomId).c : 0;
   // groupless admin has empty scope, not global
   if (me.role === 'admin' && !gid)
-    return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, accounts_by_type: [], chat_unread, detail });
+    return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, accounts_by_type: [], chat_unread, detail, push_enabled: pushEnabled() });
 
   const accWhere = onlyUser ? 'a.user_id = ?' : gid ? 'u.group_id = ?' : '1=1';
   const accArgs = onlyUser ? [onlyUser] : gid ? [gid] : [];
@@ -616,6 +620,7 @@ r.get('/stats', (req, res) => {
     accounts_attention,
     accounts_by_type,
     chat_unread,
+    push_enabled: pushEnabled(),
     ...(detail && { detail }),
   });
 });

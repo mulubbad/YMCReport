@@ -64,7 +64,7 @@ export default function App() {
           </Routes>
         </BrowserRouter>
         </ScopeProvider>
-        <Toaster dir="rtl" />
+        <Toaster dir="rtl" position="bottom-left" />
       </AuthProvider>
     </Direction.Provider>
   )

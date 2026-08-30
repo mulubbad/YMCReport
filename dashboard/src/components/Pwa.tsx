@@ -33,7 +33,11 @@ export function Pwa() {
   useEffect(() => {
     const onPrompt = (e: Event) => { e.preventDefault(); setInstall(e as InstallEvent) }
     const off = () => toast.warning("أنت غير متصل بالإنترنت — ستظهر البيانات عند عودة الاتصال", { id: "net" })
-    const on = () => toast.success("عاد الاتصال بالإنترنت", { id: "net" })
+    const on = () => {
+      toast.success("عاد الاتصال بالإنترنت", { id: "net" })
+      window.dispatchEvent(new Event("ymc:refresh")) // reads refresh
+      navigator.serviceWorker?.controller?.postMessage({ type: "flush" }) // queued writes replay now
+    }
     window.addEventListener("beforeinstallprompt", onPrompt)
     window.addEventListener("appinstalled", () => setHidden(true))
     window.addEventListener("offline", off)

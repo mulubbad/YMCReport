@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   AlertTriangle,
+  AtSign,
   BellOff,
   BellRing,
   CheckCheck,
@@ -24,7 +25,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 
-type Kind = "task_new" | "task_due_soon" | "task_overdue" | "task_done" | "account_stale" | "account_status" | "task_nudge" | "message" | "profile_request" | "profile_reviewed"
+type Kind = "task_new" | "task_due_soon" | "task_overdue" | "task_done" | "account_stale" | "account_status" | "task_nudge" | "message" | "mention" | "profile_request" | "profile_reviewed"
 type Item = { id: number; kind: Kind; title: string; body: string | null; link: string | null; read: number; created_at: string }
 
 const KINDS: Record<Kind, { label: string; Icon: typeof Clock; tile: string }> = {
@@ -36,6 +37,7 @@ const KINDS: Record<Kind, { label: string; Icon: typeof Clock; tile: string }> =
   account_status: { label: "تغيّر حالة حساب", Icon: ShieldAlert, tile: "bg-danger-light text-destructive" },
   task_nudge: { label: "تذكير", Icon: BellRing, tile: "bg-warning-light text-warning" },
   message: { label: "رسالة خاصة", Icon: MessageCircle, tile: "bg-info-light text-info" },
+  mention: { label: "إشارة إليك", Icon: AtSign, tile: "bg-primary-light text-primary" },
   profile_request: { label: "طلب تعديل بيانات", Icon: UserRoundPen, tile: "bg-primary-light text-primary" },
   profile_reviewed: { label: "مراجعة طلب تعديل", Icon: UserRoundCheck, tile: "bg-success-light text-success" },
 }
@@ -61,6 +63,14 @@ export default function Notifications() {
   const [onlyUnread, setOnlyUnread] = useState(false)
   const [kind, setKind] = useState<Kind | "all">("all")
   const [busy, setBusy] = useState(false)
+  const [tick, setTick] = useState(0)
+
+  // push arriving while on this page (SW message → ymc:refresh) must not leave the list stale
+  useEffect(() => {
+    const bump = () => setTick((t) => t + 1)
+    window.addEventListener("ymc:refresh", bump)
+    return () => window.removeEventListener("ymc:refresh", bump)
+  }, [])
 
   const query = (before?: number) => {
     const q = new URLSearchParams({ limit: String(LIMIT) })
@@ -88,7 +98,7 @@ export default function Notifications() {
       stale = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onlyUnread, kind])
+  }, [onlyUnread, kind, tick])
 
   const loadMore = async () => {
     if (!next) return

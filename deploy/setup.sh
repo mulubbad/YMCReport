@@ -29,5 +29,6 @@ echo; echo "Done. Add GitHub secrets:"
 echo "  SSH_HOST = $(curl -s ifconfig.me || hostname -I | awk '{print $1}')"
 echo "  SSH_KEY  = contents of /root/.ssh/ymc_deploy  (private key, shown below)"
 echo "  VITE_FIREBASE_VAPID_KEY = Firebase console → Cloud Messaging → Web Push certificates"
+[ -f /etc/ymcreport-firebase.json ] || printf '\033[31mWARNING: /etc/ymcreport-firebase.json missing — push notifications are DISABLED until you copy the Firebase service-account JSON there (chmod 600) and restart ymcreport.\033[0m\n'
 echo "Then copy the Firebase service-account JSON to /etc/ymcreport-firebase.json (chmod 600) and restart ymcreport."; echo
 cat /root/.ssh/ymc_deploy

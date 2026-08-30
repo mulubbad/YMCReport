@@ -13,6 +13,8 @@ import {
   MessageCircle,
   ScanSearch,
   ShieldAlert,
+  UserRoundCheck,
+  UserRoundPen,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
@@ -25,7 +27,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
-import { enablePush, pushState, syncPush } from "@/lib/push"
+import { enablePush, needsRegister, pushState, syncPush } from "@/lib/push"
 import { cn } from "@/lib/utils"
 
 export type Notification = {
@@ -48,7 +50,12 @@ export const KINDS = {
   task_nudge: { label: "تذكير", icon: BellRing, tone: "bg-warning-light text-warning" },
   message: { label: "رسالة خاصة", icon: MessageCircle, tone: "bg-info-light text-info" },
   mention: { label: "إشارة إليك", icon: AtSign, tone: "bg-primary-light text-primary" },
+  profile_request: { label: "طلب تعديل بيانات", icon: UserRoundPen, tone: "bg-primary-light text-primary" },
+  profile_reviewed: { label: "مراجعة طلب تعديل", icon: UserRoundCheck, tone: "bg-success-light text-success" },
 } as const
+
+// unknown kinds (older/newer server) render neutrally instead of masquerading as a new task
+export const FALLBACK_KIND = { label: "إشعار", icon: Bell, tone: "bg-muted text-muted-foreground" }
 
 const BASE_TITLE = "YMCReport — نظام متابعة الأعمال"
 const POLL_MS = 30_000
@@ -65,7 +72,7 @@ export function ago(iso: string) {
 }
 
 export function KindIcon({ kind, className }: { kind: Notification["kind"]; className?: string }) {
-  const k = KINDS[kind] ?? KINDS.task_new
+  const k = KINDS[kind] ?? FALLBACK_KIND
   const Icon = k.icon
   return (
     <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-md", k.tone, className)}>
@@ -139,6 +146,7 @@ export function useNotifications() {
 
   useEffect(() => {
     document.title = unread > 0 ? `(${unread}) ${BASE_TITLE}` : BASE_TITLE
+    try { void navigator.setAppBadge?.(unread) } catch { /* unsupported */ }
   }, [unread])
 
   const markRead = useCallback(async (ids: number[] | "all") => {
@@ -155,6 +163,11 @@ export function NotificationBell() {
   const navigate = useNavigate()
   const [push, setPush] = useState(pushState)
   useEffect(syncPush, [])
+  const canRetry = push === "default" || needsRegister()
+  const iosNotInstalled =
+    push === "unsupported" &&
+    /iphone|ipad|ipod/i.test(navigator.userAgent) &&
+    !window.matchMedia("(display-mode: standalone)").matches
   const enable = async () => {
     try {
       if (await enablePush()) toast.success("تم تفعيل تنبيهات الجهاز")
@@ -181,7 +194,7 @@ export function NotificationBell() {
           <Bell className="size-5" />
           {unread > 0 && (
             <span
-              aria-live="polite"
+              aria-hidden="true"
               className="absolute top-1 end-1 min-w-4 rounded-full bg-destructive px-1 text-center text-[10px] leading-4 font-semibold text-white"
             >
               {unread > 99 ? "99+" : unread}
@@ -204,17 +217,31 @@ export function NotificationBell() {
             </Button>
           )}
         </div>
-        {push === "default" && (
+        {canRetry ? (
           <button
             type="button"
             onClick={() => void enable()}
             className="flex w-full items-center gap-3 border-b border-secondary bg-primary-light/60 px-4 py-2.5 text-start text-xs hover:bg-primary-light"
           >
             <BellPlus className="size-4 shrink-0 text-primary" />
-            <span className="flex-1">فعّل تنبيهات الجهاز لتصلك الإشعارات فورًا حتى عند إغلاق التطبيق</span>
+            <span className="flex-1">
+              {push === "default"
+                ? "فعّل تنبيهات الجهاز لتصلك الإشعارات فورًا حتى عند إغلاق التطبيق"
+                : "لم يكتمل تفعيل تنبيهات الجهاز — أعد المحاولة"}
+            </span>
             <span className="font-semibold text-primary">تفعيل</span>
           </button>
-        )}
+        ) : push === "denied" ? (
+          <p className="flex items-center gap-3 border-b border-secondary bg-muted/50 px-4 py-2.5 text-xs text-muted-foreground">
+            <BellOff className="size-4 shrink-0" />
+            تنبيهات الجهاز محظورة — فعّلها من إعدادات الموقع في المتصفح
+          </p>
+        ) : iosNotInstalled ? (
+          <p className="flex items-center gap-3 border-b border-secondary bg-muted/50 px-4 py-2.5 text-xs text-muted-foreground">
+            <BellPlus className="size-4 shrink-0" />
+            أضف التطبيق إلى الشاشة الرئيسية (مشاركة ← إضافة إلى الشاشة الرئيسية) لتفعيل التنبيهات
+          </p>
+        ) : null}
         <div className="max-h-[60vh] overflow-y-auto">
           {loading && items.length === 0 ? (
             Array.from({ length: 3 }, (_, i) => (

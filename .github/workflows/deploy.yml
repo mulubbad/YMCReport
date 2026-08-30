@@ -22,7 +22,9 @@ jobs:
 
       - name: Build frontend
         working-directory: dashboard
-        run: npm ci && npm run build
+        run: |
+          test -n "$VITE_FIREBASE_VAPID_KEY" || { echo "VITE_FIREBASE_VAPID_KEY secret missing — push would ship silently disabled"; exit 1; }
+          npm ci && npm run build
         env:
           VITE_API_URL: https://backend.ymcteam.org
           VITE_FIREBASE_VAPID_KEY: ${{ secrets.VITE_FIREBASE_VAPID_KEY }}
@@ -41,4 +43,6 @@ jobs:
         run: |
           rsync -az --delete --exclude node_modules --exclude '*.db*' server/ $SSH:/opt/ymcreport/server/
           rsync -az deploy/ $SSH:/opt/ymcreport/deploy/
-          ssh $SSH 'cd /opt/ymcreport/server && npm ci --omit=dev && systemctl restart ymcreport && systemctl is-active ymcreport'
+          ssh $SSH 'cp /opt/ymcreport/deploy/nginx.conf /etc/nginx/sites-available/ymcteam && nginx -t && systemctl reload nginx \
+            && cp /opt/ymcreport/deploy/ymcreport.service /etc/systemd/system/ymcreport.service && systemctl daemon-reload \
+            && cd /opt/ymcreport/server && npm ci --omit=dev && systemctl restart ymcreport && systemctl is-active ymcreport'

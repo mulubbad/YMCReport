@@ -40,6 +40,7 @@ r.post('/profile/requests', (req, res) => {
   const changes = {};
   for (const f of REQUESTABLE) {
     const v = typeof b[f] === 'string' ? b[f].trim() : null;
+    if (v && v.length > 100) return res.status(400).json({ error: 'القيمة المطلوبة طويلة جدًا (الحد 100 حرف)' });
     if (v && v !== me[f]) changes[f] = { from: me[f], to: v };
   }
   if (!Object.keys(changes).length) return res.status(400).json({ error: 'لا توجد تغييرات لإرسالها' });
