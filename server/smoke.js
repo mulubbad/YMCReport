@@ -48,6 +48,34 @@ function step(name, ok, detail) {
   const pg = await call('POST', `/accounts/${acc.data.id}/pages`, ut, { name: 'My Page', url: 'https://fb.com/p' });
   step('create page', pg.status === 200 && !!pg.data.id, JSON.stringify(pg.data));
 
+  // ---- facebook sync: the suite runs with NO FB_TOKEN, so it asserts the degrade-honestly contract ----
+  const hz = await call('GET', '/sync/health', ut);
+  const sy = await call('POST', `/accounts/${acc.data.id}/sync`, ut, {});
+  const syp = await call('POST', `/pages/${pg.data.id}/sync`, ut, {});
+  step('sync degrades honestly without FB_TOKEN',
+    hz.status === 200 && hz.data.connected === false
+    && sy.status === 400 && /فيسبوك/.test(sy.data.error)
+    && syp.status === 400 && /فيسبوك/.test(syp.data.error),
+    JSON.stringify([hz.data, sy.data, syp.data]));
+
+  const syn = await call('POST', '/accounts/999999/sync', ut, {});
+  step('sync 404s before it reports a missing token', syn.status === 404, JSON.stringify(syn.data));
+
+  // the new tracked columns persist AND log a metrics event (quickUpdate builds its UPDATE from TRACK —
+  // hardcoding the column list there is exactly how a synced value gets silently dropped)
+  const up = await call('POST', `/accounts/${acc.data.id}/updates`, ut, { followers: 120, shares: 7, reactions: 30, comments: 4 });
+  const ev = await call('GET', `/accounts/${acc.data.id}/events`, ut);
+  const met = ev.data.find((e) => e.kind === 'metrics');
+  step('quick update tracks shares/reactions/comments + logs metrics',
+    up.status === 200 && up.data.shares === 7 && up.data.reactions === 30 && up.data.comments === 4
+    && !!up.data.last_checked_at
+    && !!met && met.data.shares === 7 && met.data.followers === 120,
+    JSON.stringify([up.data.shares, up.data.reactions, up.data.comments, met && met.data]));
+
+  const neg = await call('POST', `/accounts/${acc.data.id}/updates`, ut, { shares: -3 });
+  step('quick update rejects a negative tracked metric', neg.status === 400 && /المشاركات/.test(neg.data.error),
+    JSON.stringify(neg.data));
+
   const tk = await call('POST', '/tasks', at, {
     kind: 'interact', title: 'Engage post', description: 'like and share',
     subtasks: [{ title: 'like', url: 'https://x/1' }, { title: 'share' }],
@@ -304,6 +332,10 @@ function step(name, ok, detail) {
     && gone.status === 403 && goneTask.status === 403,
     JSON.stringify([revoke.data.group_ids, gone.status, goneTask.status]));
 
+  // an id-addressed sync is guarded by canAccess BEFORE the token check -> 403, never 400
+  const syx = await call('POST', `/accounts/${accB.data.id}/sync`, at, {});
+  step('sync is scope-guarded before the token check', syx.status === 403, JSON.stringify([syx.status, syx.data]));
+
   // ---- leak regressions: a leader must never reach a group they do not lead ----
   // 1. an admin who leads NO group gets an empty manager dashboard, not the whole system
   const orphan = await call('POST', '/users', sup, { username: 'orphan', password: 'pass1234', name: 'Orphan Admin', role: 'admin' });
@@ -347,6 +379,82 @@ function step(name, ok, detail) {
   step('chat read pointer is per room', beforeA.data.chat_unread > 0 && beforeB.data.chat_unread > 0
     && afterA.data.chat_unread === 0 && afterB.data.chat_unread === beforeB.data.chat_unread,
     JSON.stringify([beforeA.data.chat_unread, beforeB.data.chat_unread, afterA.data.chat_unread, afterB.data.chat_unread]));
+
+  // ---- direct messages: private 1:1 threads inside a group ----
+  const u2t = u2l.data.token;                       // user2, an Alpha member like user1 (ut)
+  const dmSend = await call('POST', `/chat/dm/${us2.data.id}/messages`, ut, { body: 'سرّ بيني وبينك #خاص' });
+  const dmBack = await call('POST', `/chat/dm/${us.data.id}/messages`, u2t, { body: 'وصلني' });
+  const dmMine = await call('GET', `/chat/dm/${us2.data.id}/messages`, ut);
+  const dmTheirs = await call('GET', `/chat/dm/${us.data.id}/messages`, u2t);
+  const dmBodies = (r) => (r.data.items ?? []).map((m) => m.body);
+  step('members can DM each other', dmSend.status === 200 && dmBack.status === 200
+    && dmMine.status === 200 && dmBodies(dmMine).length === 2 && dmBodies(dmMine).includes('سرّ بيني وبينك #خاص')
+    && dmBodies(dmTheirs).length === 2 && dmBodies(dmTheirs).includes('وصلني'),
+    JSON.stringify([dmSend.data, dmBodies(dmMine), dmBodies(dmTheirs)]));
+
+  // the leader of the group has NO read path into a thread they are not in
+  const leaderPeek = await call('GET', `/chat/dm/${us.data.id}/messages`, at);   // admin1 ↔ user1, must be empty
+  const leaderDelete = await call('DELETE', `/chat/dm/messages/${dmSend.data.id}`, at);
+  const peerDelete = await call('DELETE', `/chat/dm/messages/${dmSend.data.id}`, u2t); // recipient is not the author
+  step('a DM is private to its two participants', leaderPeek.status === 200 && leaderPeek.data.items.length === 0
+    && leaderDelete.status === 404 && peerDelete.status === 403,
+    JSON.stringify([dmBodies(leaderPeek), leaderDelete.status, peerDelete.status]));
+
+  // no DM ever surfaces through a group-room query
+  const roomList = await call('GET', '/chat/messages', ut);
+  const roomSearch = await call('GET', '/chat/messages?q=' + encodeURIComponent('سرّ بيني وبينك'), at);
+  const roomTags = await call('GET', '/chat/tags', at);
+  const roomPins = await call('GET', '/chat/pinned', at);
+  step('DMs never leak into the group room', roomList.status === 200 && !dmBodies(roomList).includes('سرّ بيني وبينك #خاص')
+    && roomSearch.data.items.length === 0
+    && !roomTags.data.some((t) => t.tag === 'خاص')
+    && !dmBodies(roomPins).includes('سرّ بيني وبينك #خاص'),
+    JSON.stringify([dmBodies(roomList), dmBodies(roomSearch), roomTags.data, roomPins.data.length]));
+
+  // bad peers: yourself, someone from another group, and a super (who belongs to no room)
+  const dmSelf = await call('POST', `/chat/dm/${us.data.id}/messages`, ut, { body: 'x' });
+  const dmCross = await call('POST', `/chat/dm/${ub.data.id}/messages`, ut, { body: 'x' }); // userb is in Beta
+  const dmSuper = await call('POST', `/chat/dm/${us.data.id}/messages?group_id=${g.data.id}`, sup, { body: 'x' }); // named group → the roomUsers rule, not the missing-group branch
+  step('DM peers must share the room', dmSelf.status === 400 && dmCross.status === 403 && dmSuper.status === 403,
+    JSON.stringify([dmSelf.data, dmCross.data, dmSuper.data]));
+
+  // unread: counted per thread, and the room's own pointer is untouched by a DM
+  const roomBefore = (await call('GET', '/stats', u2t)).data.chat_unread;
+  const dmStats1 = await call('GET', '/stats', u2t);
+  await call('PUT', `/chat/dm/${us.data.id}/read`, u2t, { last_id: dmSend.data.id });
+  const dmStats2 = await call('GET', '/stats', u2t);
+  const roomAfter = (await call('GET', '/stats', u2t)).data.chat_unread;
+  step('DM unread is separate from the room', dmStats1.data.dm_unread >= 1 && dmStats2.data.dm_unread === 0
+    && roomAfter === roomBefore,
+    JSON.stringify([dmStats1.data.dm_unread, dmStats2.data.dm_unread, roomBefore, roomAfter]));
+
+  // two DM threads keep independent pointers
+  const fromAdmin = await call('POST', `/chat/dm/${us2.data.id}/messages`, at, { body: 'من المدير' });
+  const both = await call('GET', '/chat/dm', u2t);
+  const adminThread = both.data.find((c) => c.id === ad.data.id);
+  const userThread = both.data.find((c) => c.id === us.data.id);
+  step('conversation list carries per-peer unread', fromAdmin.status === 200 && both.status === 200
+    && adminThread && adminThread.unread === 1 && adminThread.last.body === 'من المدير'
+    && userThread && userThread.unread === 0,
+    JSON.stringify(both.data.map((c) => [c.name, c.unread, c.last && c.last.body])));
+
+  // a participant moved out of the group keeps no path in — reads, writes AND deletes
+  const leaver = await call('POST', '/users', sup, { username: 'leaver', password: 'pass1234', name: 'Leaver', role: 'user', group_id: g.data.id });
+  const lt = (await call('POST', '/login', null, { username: 'leaver', password: 'pass1234' })).data.token;
+  const leaverDm = await call('POST', `/chat/dm/${us.data.id}/messages`, lt, { body: 'قبل المغادرة' });
+  await call('PUT', `/users/${leaver.data.id}`, sup, { group_id: gB.data.id }); // moved to Beta; old token still valid
+  const goneRead = await call('GET', `/chat/dm/${us.data.id}/messages`, lt);
+  const goneWrite = await call('POST', `/chat/dm/${us.data.id}/messages`, lt, { body: 'x' });
+  const goneDelete = await call('DELETE', `/chat/dm/messages/${leaverDm.data.id}`, lt);
+  const goneStats = await call('GET', '/stats', lt);
+  step('leaving the group closes every DM path', leaverDm.status === 200
+    && goneRead.status === 403 && goneWrite.status === 403 && goneDelete.status === 404
+    && goneStats.data.dm_unread === 0,
+    JSON.stringify([goneRead.status, goneWrite.status, goneDelete.status, goneStats.data.dm_unread]));
+
+  // an image key from a private thread cannot be re-attached to the group room
+  const stolen = await call('POST', '/chat/messages', ut, { image_key: `chat/${g.data.id}/dm/x.png` });
+  step('DM image keys are rejected by the room', stolen.status === 400, JSON.stringify(stolen.data));
 
   const ex = await call('GET', '/export', at);
   step('export xlsx', ex.status === 200 && ex.ct.includes('spreadsheetml') && ex.data.subarray(0, 2).toString() === 'PK',

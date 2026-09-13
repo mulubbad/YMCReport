@@ -59,6 +59,7 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { NotesButton, NotesThread } from "@/components/NotesThread"
+import { useDeepLink } from "@/lib/deeplink"
 
 // ---------- types (CONTRACT.md → SIM lines) ----------
 
@@ -137,6 +138,13 @@ export default function Sims() {
   const [busy, setBusy] = useState(false)
   const [deleting, setDeleting] = useState<Sim | null>(null)
   const [notesFor, setNotesFor] = useState<Sim | null>(null)
+
+  // notification deep link: open the line's notes thread the note was written in
+  useDeepLink(["sim"], rows !== null, (p) => {
+    const s = (rows ?? []).find((x) => x.id === Number(p.get("sim")))
+    if (s) setNotesFor(s)
+    else toast.error("خط الاتصال لم يعد متاحًا")
+  })
 
   const load = () =>
     api

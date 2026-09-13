@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react"
 import { api } from "@/lib/api"
-import { cn } from "@/lib/utils"
+import { cn, ext } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -121,8 +121,7 @@ export function SubtaskRow({ taskId, sub, onToggle }: { taskId: number; sub: Sub
   const m = useMine(taskId, sub.mine, sub.id, required, onToggle)
   const link = sub.url && (
     <a
-      href={sub.url}
-      target="_blank"
+      href={ext(sub.url)}
       rel="noreferrer"
       aria-label={`فتح رابط ${sub.title}`}
       title={sub.url}
@@ -202,7 +201,7 @@ export function DoneText({ mine, label, actions, url }: { mine?: Mine; label?: s
           {mine?.notes && <span className="text-muted-foreground"> — {mine.notes}</span>}
         </span>
         {url && (
-          <a href={url} target="_blank" rel="noreferrer" aria-label={`فتح رابط ${label}`} className="text-muted-foreground hover:text-primary">
+          <a href={ext(url)} rel="noreferrer" aria-label={`فتح رابط ${label}`} className="text-muted-foreground hover:text-primary">
             <ExternalLink className="size-4" />
           </a>
         )}
@@ -502,7 +501,7 @@ function DetailBody({
                             </span>
                           )}
                           {s.url && (
-                            <a href={s.url} target="_blank" rel="noreferrer" aria-label={`فتح رابط ${s.title}`} className="text-muted-foreground hover:text-primary">
+                            <a href={ext(s.url)} rel="noreferrer" aria-label={`فتح رابط ${s.title}`} className="text-muted-foreground hover:text-primary">
                               <ExternalLink className="size-4" />
                             </a>
                           )}

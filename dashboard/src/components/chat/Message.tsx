@@ -1,4 +1,4 @@
-import { Copy, MoreHorizontal, Pin, PinOff, Trash2 } from "lucide-react"
+import { Copy, MessageSquare, MoreHorizontal, Pin, PinOff, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -24,7 +24,9 @@ export const ROLE_TILE = {
 const PART = /(@[\p{L}\p{N}_.-]+|#[\p{L}\p{N}_]+)/u
 const chip = "inline-flex items-center rounded-badge bg-primary-light px-1.5 text-[0.9em] font-semibold text-primary"
 
-function Body({ body, byUsername, onTag }: { body: string; byUsername: Map<string, Member>; onTag: (t: string) => void }) {
+// in a private thread there are no mentions or tags to render, so onTag is absent and the text stays plain
+function Body({ body, byUsername, onTag }: { body: string; byUsername: Map<string, Member>; onTag?: (t: string) => void }) {
+  if (!onTag) return <p className="text-sm break-words whitespace-pre-wrap">{body}</p>
   return (
     <p className="text-sm break-words whitespace-pre-wrap">
       {body.split(PART).map((part, i) => {
@@ -66,20 +68,23 @@ export function Message({
   onImage,
   onPin,
   onDelete,
+  onDm,
 }: {
   m: ChatMsg
   me: User
   byUsername: Map<string, Member>
   highlighted: boolean
-  onTag: (t: string) => void
+  onTag?: (t: string) => void
   onImage: (url: string) => void
-  onPin: (m: ChatMsg) => void
+  onPin?: (m: ChatMsg) => void
   onDelete: (m: ChatMsg) => void
+  onDm?: (userId: number) => void // start a private thread with this author (room only)
 }) {
   const mine = m.user_id === me.id
   const manager = me.role === "admin" || me.role === "super"
-  const canDelete = !m.deleted && (mine || manager)
-  const canPin = !m.deleted && manager
+  // a private thread has no leader override: only the author may delete (onPin absent ⇒ private)
+  const canDelete = !m.deleted && (mine || (!!onPin && manager))
+  const canPin = !m.deleted && manager && !!onPin
   const when = parseUtc(m.created_at)
   const name = m.user_name ?? "مستخدم محذوف"
   const role = m.user_role
@@ -147,8 +152,14 @@ export function Message({
                   نسخ
                 </DropdownMenuItem>
               )}
+              {onDm && !mine && m.user_id && (
+                <DropdownMenuItem onClick={() => onDm(m.user_id!)}>
+                  <MessageSquare />
+                  رسالة خاصة
+                </DropdownMenuItem>
+              )}
               {canPin && (
-                <DropdownMenuItem onClick={() => onPin(m)}>
+                <DropdownMenuItem onClick={() => onPin!(m)}>
                   {m.pinned ? <PinOff /> : <Pin />}
                   {m.pinned ? "إلغاء التثبيت" : "تثبيت"}
                 </DropdownMenuItem>

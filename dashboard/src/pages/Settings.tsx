@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { ExternalLink, Globe, Pencil, Plus, Tags, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
+import { ext } from "@/lib/utils"
 import { useAuth } from "@/lib/auth"
 import { useScope } from "@/lib/scope"
 import { Badge } from "@/components/ui/badge"
@@ -309,8 +310,7 @@ function SitesTab({ gid }: { gid: string }) {
   const link = (s: Site) =>
     s.url ? (
       <a
-        href={s.url}
-        target="_blank"
+        href={ext(s.url)}
         rel="noreferrer"
         dir="ltr"
         className="flex min-w-0 items-center gap-1 text-primary hover:underline"

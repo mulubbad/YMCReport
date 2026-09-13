@@ -8,13 +8,12 @@ r.use(auth);
 
 const LABEL_AR = { account: 'الحساب', page: 'الصفحة', sim: 'خط الاتصال' };
 const NOT_FOUND = { account: 'الحساب غير موجود', page: 'الصفحة غير موجودة', sim: 'الخط غير موجود' };
-const LINK = { account: '/accounts', page: '/accounts', sim: '/sims' };
 const FORBIDDEN = { error: 'ليست لديك صلاحية لتنفيذ هذا الإجراء' };
 
 const OWNER_SQL = {
-  account: 'SELECT a.user_id, u.group_id, a.name FROM accounts a JOIN users u ON u.id = a.user_id WHERE a.id = ?',
-  page: 'SELECT a.user_id, u.group_id, p.name FROM pages p JOIN accounts a ON a.id = p.account_id JOIN users u ON u.id = a.user_id WHERE p.id = ?',
-  sim: 'SELECT s.user_id, u.group_id, s.number AS name FROM sim_lines s JOIN users u ON u.id = s.user_id WHERE s.id = ?',
+  account: 'SELECT a.user_id, u.group_id, a.name, a.id AS account_id FROM accounts a JOIN users u ON u.id = a.user_id WHERE a.id = ?',
+  page: 'SELECT a.user_id, u.group_id, p.name, a.id AS account_id FROM pages p JOIN accounts a ON a.id = p.account_id JOIN users u ON u.id = a.user_id WHERE p.id = ?',
+  sim: 'SELECT s.user_id, u.group_id, s.number AS name, NULL AS account_id FROM sim_lines s JOIN users u ON u.id = s.user_id WHERE s.id = ?',
 };
 // entity owner {user_id, group_id, name}; null when the type or id is unknown
 const resolveOwner = (type, id) => (OWNER_SQL[type] ? db.prepare(OWNER_SQL[type]).get(id) : null) ?? null;
@@ -31,6 +30,8 @@ function entity(req, res, src) {
   if (!canAccess(req.user, o)) { res.status(403).json(FORBIDDEN); return null; }
   return { type, id, ...o };
 }
+
+const senderName = (id) => db.prepare('SELECT name FROM users WHERE id = ?').get(id)?.name ?? '';
 
 const NOTE_SQL = `SELECT n.id, n.body, n.user_id AS author_id, u.name AS author_name, u.role AS author_role, n.created_at
   FROM entity_notes n LEFT JOIN users u ON u.id = n.user_id`;
@@ -51,7 +52,11 @@ r.post('/notes', (req, res) => {
   // counterparts: the group's admins except the author, plus the owner when someone else wrote
   const to = groupAdmins(e.group_id, me.id);
   if (e.user_id !== me.id) to.push(e.user_id);
-  notify(to, { key: `note:${id}`, kind: 'message', title: `ملاحظة خاصة على ${LABEL_AR[e.type]}: ${e.name}`, body: body.slice(0, 120), link: LINK[e.type] });
+  // deep link opens the very thread the note was written in (profile → الملاحظات، or the page's/line's dialog)
+  const link = e.type === 'sim' ? `/sims?sim=${e.id}`
+    : e.type === 'page' ? `/accounts?account=${e.account_id}&page=${e.id}`
+    : `/accounts?account=${e.id}&tab=notes`;
+  notify(to, { key: `note:${id}`, kind: 'comment', title: `ملاحظة خاصة على ${LABEL_AR[e.type]}: ${e.name}`, body: `${senderName(me.id)}: ${body.slice(0, 120)}`, link });
   res.json(db.prepare(`${NOTE_SQL} WHERE n.id = ?`).get(id));
 });
 

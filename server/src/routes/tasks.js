@@ -165,7 +165,7 @@ r.post('/tasks', requireRole('admin', 'super'), (req, res) => {
   notify(db.prepare(`SELECT id FROM users WHERE active = 1 AND id != ?
     AND (group_id = ? OR id IN (SELECT user_id FROM admin_groups WHERE group_id = ?))`).all(req.user.id, gid, gid).map((u) => u.id), {
     key: `task:${id}:new`, kind: 'task_new', title: `مهمة جديدة: ${b.title}`,
-    body: [KIND_AR[b.kind], rep.repeat ? 'مهمة يومية متكررة' : b.due_date && `الاستحقاق ${b.due_date}`].filter(Boolean).join('، '), link: '/tasks',
+    body: [KIND_AR[b.kind], rep.repeat ? 'مهمة يومية متكررة' : b.due_date && `الاستحقاق ${b.due_date}`].filter(Boolean).join('، '), link: `/tasks?task=${id}`,
   }, req.user.id);
   res.json(serializeTask(getTask(id), req.user));
 });
@@ -318,7 +318,7 @@ r.put('/tasks/:id/interactions', (req, res) => {
     const name = db.prepare('SELECT name FROM users WHERE id = ?').get(req.user.id).name;
     notify(groupAdmins(task.group_id, req.user.id), {
       key: `task:${task.id}:done:${req.user.id}` + (dk ? `:${dk}` : ''), kind: 'task_done', title: `إنجاز مهمة: ${task.title}`,
-      body: `بواسطة ${name}` + (b.notes ? `: ${b.notes}` : ''), link: '/tasks',
+      body: `بواسطة ${name}` + (b.notes ? `: ${b.notes}` : ''), link: `/tasks?task=${task.id}`,
     }, req.user.id);
   }
   const row = db.prepare('SELECT * FROM interactions WHERE id = ?').get(id);
@@ -361,7 +361,7 @@ r.post('/tasks/:id/nudge', requireRole('admin', 'super'), (req, res) => {
   const due = task.due_date ? ` — الاستحقاق ${task.due_date.slice(0, 10)}` : '';
   const message = String(b.message ?? '').trim().slice(0, 500);
   notify(targets, { key, kind: 'task_nudge', title: `تذكير: ${task.title}`,
-    body: message || `المهمة بانتظار إنجازك${due}. — ${senderName(req.user.id)}`, link: '/tasks' });
+    body: message || `المهمة بانتظار إنجازك${due}. — ${senderName(req.user.id)}`, link: `/tasks?task=${task.id}` });
   const sent = count() - before;
   res.json({ notified: sent, skipped: targets.length - sent });
 });
@@ -380,7 +380,7 @@ r.post('/tasks/:id/message', (req, res) => {
   if (!body) return res.status(400).json({ error: 'نص الرسالة مطلوب' });
   if (body.length > 1000) return res.status(400).json({ error: 'الرسالة أطول من 1000 حرف' });
   notify([to.id], { key: `task:${task.id}:msg:${req.user.id}:${Date.now()}`, kind: 'message',
-    title: `رسالة خاصة من ${senderName(req.user.id)}: ${task.title}`, body, link: '/tasks' });
+    title: `رسالة خاصة من ${senderName(req.user.id)}: ${task.title}`, body, link: `/tasks?task=${task.id}` });
   res.json({ ok: true });
 });
 
@@ -397,6 +397,39 @@ r.get('/tasks/:id/comments', (req, res) => {
     WHERE c.task_id = ? ORDER BY c.id`).all(task.id));
 });
 
+// everyone who can be @tagged in this group's threads: its own users + admins leading it from elsewhere
+const groupPeople = (gid) => db.prepare(`SELECT DISTINCT u.id, u.name FROM users u
+  LEFT JOIN admin_groups ag ON ag.user_id = u.id
+  WHERE u.active = 1 AND (u.group_id = ? OR ag.group_id = ?)`).all(gid, gid);
+
+const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// "@الاسم" tokens → user ids. Names can contain spaces, so match the longest first ("محمد علي" beats
+// "محمد") — same rule the comment highlighter uses, so anything that LOOKS tagged actually notifies.
+function taggedIds(body, people) {
+  if (!people.length) return [];
+  const re = new RegExp(`@(${people.map((p) => p.name).sort((a, b) => b.length - a.length).map(esc).join('|')})`, 'g');
+  const hit = new Set([...body.matchAll(re)].map((m) => m[1]));
+  return [...new Set(people.filter((p) => hit.has(p.name)).map((p) => p.id))];
+}
+
+const activeOnly = (ids) => (ids.length
+  ? db.prepare(`SELECT id FROM users WHERE active = 1 AND id IN (${ids.map(() => '?').join(',')})`).all(...ids).map((u) => u.id)
+  : []);
+
+// already involved = the group's leaders, the creator, anyone who commented, anyone who worked on it,
+// and anyone tagged earlier in the thread (a tag subscribes you to the replies, like GitHub).
+// ponytail: uninvolved members aren't pinged for every comment — being @tagged always reaches them
+const involvedIn = (task, exceptId, people) => {
+  const ids = new Set(groupAdmins(task.group_id, exceptId));
+  if (task.created_by) ids.add(task.created_by);
+  for (const t of ['SELECT DISTINCT user_id FROM task_comments WHERE task_id = ?', 'SELECT DISTINCT user_id FROM interactions WHERE task_id = ?'])
+    for (const row of db.prepare(t).all(task.id)) if (row.user_id) ids.add(row.user_id);
+  for (const c of db.prepare('SELECT body FROM task_comments WHERE task_id = ?').all(task.id))
+    for (const uid of taggedIds(c.body, people)) ids.add(uid);
+  ids.delete(exceptId);
+  return [...ids];
+};
+
 r.post('/tasks/:id/comments', (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'المهمة غير موجودة' });
@@ -405,6 +438,17 @@ r.post('/tasks/:id/comments', (req, res) => {
   if (!body) return res.status(400).json({ error: 'نص التعليق مطلوب' });
   if (body.length > COMMENT_MAX) return res.status(400).json({ error: `التعليق أطول من ${COMMENT_MAX} حرف` });
   const id = db.prepare('INSERT INTO task_comments (task_id, user_id, body) VALUES (?,?,?)').run(task.id, req.user.id, body).lastInsertRowid;
+  // tagged people get a personal "إشارة إليك"; everyone else already involved gets the thread update.
+  // Both land on the comment itself (?c=1 opens the discussion), never just the task list.
+  const link = `/tasks?task=${task.id}&c=1`;
+  const preview = `${senderName(req.user.id)}: ${body.slice(0, 120)}`;
+  const people = groupPeople(task.group_id);
+  const tagged = activeOnly(taggedIds(body, people).filter((uid) => uid !== req.user.id));
+  if (tagged.length)
+    notify(tagged, { key: `comment:${id}:mention`, kind: 'mention', title: `إشارة إليك في تعليق: ${task.title}`, body: preview, link });
+  const rest = activeOnly(involvedIn(task, req.user.id, people).filter((uid) => !tagged.includes(uid)));
+  if (rest.length)
+    notify(rest, { key: `comment:${id}`, kind: 'comment', title: `تعليق جديد على مهمة: ${task.title}`, body: preview, link });
   res.json(commentRow(id));
 });
 
@@ -507,12 +551,12 @@ function dashboardDetail(me, { from, to }, groupId) {
   for (const p of pairs) if (p.completed) byDay.get(p.completed_at.slice(0, 10)).completed++;
 
   const attention = [
-    ...overdueTasks.map((t) => ({ type: 'task', id: t.id, title: t.title, detail: `متأخرة منذ ${t.days} يوم`, severity: 'danger', link: '/tasks' })),
+    ...overdueTasks.map((t) => ({ type: 'task', id: t.id, title: t.title, detail: `متأخرة منذ ${t.days} يوم`, severity: 'danger', link: `/tasks?task=${t.id}` })),
     ...db.prepare(`SELECT a.id, a.name, a.status, a.last_checked_at FROM accounts a JOIN users u ON u.id = a.user_id
       WHERE ${gin} AND ${ATTENTION_SQL} ORDER BY a.status != 'active' DESC, a.last_checked_at`).all(...gids, STALE_ARG)
       .map((a) => a.status !== 'active'
-        ? { type: 'account', id: a.id, title: a.name, detail: `الحالة: ${STATUS_AR[a.status] ?? a.status}`, severity: 'danger', link: '/accounts' }
-        : { type: 'account', id: a.id, title: a.name, severity: 'warning', link: '/accounts',
+        ? { type: 'account', id: a.id, title: a.name, detail: `الحالة: ${STATUS_AR[a.status] ?? a.status}`, severity: 'danger', link: `/accounts?account=${a.id}` }
+        : { type: 'account', id: a.id, title: a.name, severity: 'warning', link: `/accounts?account=${a.id}`,
             detail: a.last_checked_at ? `آخر فحص منذ ${daysBetween(a.last_checked_at.slice(0, 10), today)} يوم` : 'لم يُفحص بعد' }),
   ].slice(0, 10);
 
@@ -570,9 +614,19 @@ r.get('/stats', (req, res) => {
   const roomId = gid;
   const chat_unread = roomId ? db.prepare(`SELECT COUNT(*) c FROM chat_messages WHERE group_id = ? AND deleted = 0 AND user_id != ?
     AND id > COALESCE((SELECT last_read_id FROM chat_reads WHERE user_id = ? AND group_id = ?), 0)`).get(roomId, me.id, me.id, roomId).c : 0;
+  // unread across every private thread of the active room — one read pointer per (reader, room, peer).
+  // Gated on still being in the room (same predicate as chat.js roomUsers), or a stale token shows a
+  // phantom badge with no thread to open and no reachable route to clear it.
+  const inRoom = roomId && db.prepare(`SELECT 1 FROM users WHERE id = ? AND active = 1
+    AND (group_id = ? OR id IN (SELECT user_id FROM admin_groups WHERE group_id = ?))`).get(me.id, roomId, roomId);
+  const dm_unread = inRoom ? db.prepare(`SELECT COUNT(*) c FROM dm_messages m
+    WHERE m.group_id = ? AND m.deleted = 0 AND m.user_id != ? AND (m.a_id = ? OR m.b_id = ?)
+      AND m.id > COALESCE((SELECT d.last_read_id FROM dm_reads d WHERE d.user_id = ? AND d.group_id = m.group_id
+        AND d.peer_id = CASE WHEN m.a_id = ? THEN m.b_id ELSE m.a_id END), 0)`)
+    .get(roomId, me.id, me.id, me.id, me.id, me.id).c : 0;
   // groupless admin has empty scope, not global
   if (me.role === 'admin' && !gid)
-    return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, accounts_by_type: [], chat_unread, detail, push_enabled: pushEnabled() });
+    return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, accounts_by_type: [], chat_unread, dm_unread, detail, push_enabled: pushEnabled() });
 
   const accWhere = onlyUser ? 'a.user_id = ?' : gid ? 'u.group_id = ?' : '1=1';
   const accArgs = onlyUser ? [onlyUser] : gid ? [gid] : [];
@@ -620,6 +674,7 @@ r.get('/stats', (req, res) => {
     accounts_attention,
     accounts_by_type,
     chat_unread,
+    dm_unread,
     push_enabled: pushEnabled(),
     ...(detail && { detail }),
   });

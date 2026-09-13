@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   password TEXT,
   link TEXT, profile_address TEXT, profile_work TEXT, notes TEXT,
   status TEXT NOT NULL DEFAULT 'active',
-  followers INTEGER, posts_count INTEGER, last_checked_at TEXT,
+  followers INTEGER, posts_count INTEGER, shares INTEGER, reactions INTEGER, comments INTEGER,
+  last_checked_at TEXT, posts_today INTEGER, sync_seen TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK (mobile IS NOT NULL OR email IS NOT NULL));
@@ -66,7 +67,8 @@ CREATE TABLE IF NOT EXISTS pages (
   name TEXT NOT NULL,
   url TEXT, address TEXT, work TEXT, note TEXT,
   status TEXT NOT NULL DEFAULT 'active',
-  followers INTEGER, posts_count INTEGER, last_checked_at TEXT);
+  followers INTEGER, posts_count INTEGER, shares INTEGER, reactions INTEGER, comments INTEGER,
+  last_checked_at TEXT, posts_today INTEGER, sync_seen TEXT);
 CREATE TABLE IF NOT EXISTS account_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -170,6 +172,26 @@ CREATE TABLE IF NOT EXISTS chat_reads (
   group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
   last_read_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, group_id));
+-- direct messages: a private 1:1 thread inside one group, keyed by the SORTED pair (a_id < b_id) so a
+-- conversation needs no id of its own. Its own table, so no query against chat_messages can ever return one.
+CREATE TABLE IF NOT EXISTS dm_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  a_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  b_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,   -- author; always a_id or b_id
+  body TEXT,
+  image_key TEXT,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (a_id < b_id));
+CREATE INDEX IF NOT EXISTS ix_dm_messages ON dm_messages(group_id, a_id, b_id, id);
+CREATE TABLE IF NOT EXISTS dm_reads (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  peer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_read_id INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, group_id, peer_id));
 CREATE TABLE IF NOT EXISTS admin_groups (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -208,7 +230,15 @@ for (const table of ['accounts', 'pages']) {
     status: "status TEXT NOT NULL DEFAULT 'active'",
     followers: 'followers INTEGER',
     posts_count: 'posts_count INTEGER',
+    shares: 'shares INTEGER',
+    reactions: 'reactions INTEGER',
+    comments: 'comments INTEGER',
     last_checked_at: 'last_checked_at TEXT',
+    // sync-only, never in TRACK: posts published today as of the last sync (meaningless once
+    // last_checked_at is not today — the UI hides it), and the per-post baseline the deltas diff against.
+    posts_today: 'posts_today INTEGER',
+    // {"<post-id>": [shares, reactions, comments]} for the posts in the last fetch window
+    sync_seen: 'sync_seen TEXT',
   })) if (!cols.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
 

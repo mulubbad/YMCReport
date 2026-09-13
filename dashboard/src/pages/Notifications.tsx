@@ -1,49 +1,21 @@
 import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
-import {
-  AlertTriangle,
-  AtSign,
-  BellOff,
-  BellRing,
-  CheckCheck,
-  CheckCircle2,
-  ClipboardPlus,
-  Clock,
-  MessageCircle,
-  ScanSearch,
-  ShieldAlert,
-  UserRoundCheck,
-  UserRoundPen,
-  X,
-} from "lucide-react"
+import { BellOff, CheckCheck, X } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { ago, notify, parseUtc } from "@/components/tasks/shared"
+// one kind map for the bell, its toasts and this archive — a second copy drifted twice before
+import { FALLBACK_KIND, KINDS, type NotificationKind as Kind } from "@/components/Notifications"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 
-type Kind = "task_new" | "task_due_soon" | "task_overdue" | "task_done" | "account_stale" | "account_status" | "task_nudge" | "message" | "mention" | "profile_request" | "profile_reviewed"
 type Item = { id: number; kind: Kind; title: string; body: string | null; link: string | null; read: number; created_at: string }
 
-const KINDS: Record<Kind, { label: string; Icon: typeof Clock; tile: string }> = {
-  task_new: { label: "مهمة جديدة", Icon: ClipboardPlus, tile: "bg-primary-light text-primary" },
-  task_due_soon: { label: "تستحق قريبًا", Icon: Clock, tile: "bg-warning-light text-warning" },
-  task_overdue: { label: "متأخرة", Icon: AlertTriangle, tile: "bg-danger-light text-destructive" },
-  task_done: { label: "إنجاز مهمة", Icon: CheckCircle2, tile: "bg-success-light text-success" },
-  account_stale: { label: "حساب يحتاج فحصًا", Icon: ScanSearch, tile: "bg-warning-light text-warning" },
-  account_status: { label: "تغيّر حالة حساب", Icon: ShieldAlert, tile: "bg-danger-light text-destructive" },
-  task_nudge: { label: "تذكير", Icon: BellRing, tile: "bg-warning-light text-warning" },
-  message: { label: "رسالة خاصة", Icon: MessageCircle, tile: "bg-info-light text-info" },
-  mention: { label: "إشارة إليك", Icon: AtSign, tile: "bg-primary-light text-primary" },
-  profile_request: { label: "طلب تعديل بيانات", Icon: UserRoundPen, tile: "bg-primary-light text-primary" },
-  profile_reviewed: { label: "مراجعة طلب تعديل", Icon: UserRoundCheck, tile: "bg-success-light text-success" },
-}
 // unknown kinds (older/newer server) render with this instead of crashing
-const FALLBACK_KIND = { label: "إشعار", Icon: BellRing, tile: "bg-muted text-muted-foreground" }
-const KIND_KEYS = Object.keys(KINDS) as Kind[]
+const KIND_KEYS = Object.keys(KINDS) as Kind[]  // filter options follow the shared map automatically
 const LIMIT = 30
 
 // local YYYY-MM-DD with Latin digits (server timestamps are UTC)
@@ -245,7 +217,7 @@ export default function Notifications() {
                   </div>
                   <ul className="divide-y divide-dashed">
                     {g.rows.map((n) => {
-                      const { Icon, tile, label } = KINDS[n.kind] ?? FALLBACK_KIND
+                      const { icon: Icon, tone: tile, label } = KINDS[n.kind] ?? FALLBACK_KIND
                       const isUnread = !n.read
                       return (
                         <li key={n.id}>

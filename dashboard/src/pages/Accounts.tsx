@@ -16,6 +16,9 @@ import {
   Info,
   KeyRound,
   Layers,
+  Link2Off,
+  MoreHorizontal,
+  LoaderCircle,
   Mail,
   MessageSquare,
   Minus,
@@ -23,6 +26,7 @@ import {
   Pencil,
   Phone,
   Plus,
+  RefreshCw,
   Search,
   ShieldAlert,
   StickyNote,
@@ -78,12 +82,15 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { NotesButton, NotesThread } from "@/components/NotesThread"
+import { useDeepLink } from "@/lib/deeplink"
 import { OwnerOptions } from "@/components/OwnerOptions"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { Checkbox } from "@/components/ui/checkbox"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { useScope } from "@/lib/scope"
 import { daysSince, fullDate, relDays, relTime, toDate } from "@/lib/time"
-import { cn } from "@/lib/utils"
+import { cn, ext } from "@/lib/utils"
 
 // ---------- types (CONTRACT.md → Account tracking) ----------
 
@@ -93,8 +100,16 @@ type Tracked = {
   status: Status
   followers: number | null
   posts_count: number | null
+  shares: number | null
+  reactions: number | null
+  comments: number | null
+  posts_today: number | null
   last_checked_at: string | null
 }
+
+// per-row state of a running sync; cleared by «إغلاق» or the next run, not by load()
+type SyncState = "queued" | "running" | "ok" | { error: string }
+type Health = { connected: boolean; name: string | null; error: string | null }
 
 type Account = Tracked & {
   id: number
@@ -171,6 +186,26 @@ const KIND: Record<string, { label: string; icon: LucideIcon; tone: string }> = 
 const isLate = (at: string | null) => !at || daysSince(at) > STALE_DAYS
 const needsAttention = (t: Tracked) => t.status !== "active" || isLate(t.last_checked_at)
 
+// ---- facebook sync (CONTRACT.md → Facebook sync) ----
+// Client-side HINT only — the server is the authority on whether the object resolves. An account whose
+// OWN link is a personal profile is still syncable when it owns pages, so page_count counts.
+const FB_HOST = /^(?:https?:\/\/)?(?:[\w-]+\.)*(?:facebook\.com|fb\.com|fb\.me)\//i
+const FB_PROFILE = /(?:profile\.php\?|\/people\/)/i
+const FB_SKIP = /\/(?:groups|events|share|reel|watch|marketplace)\//i
+const syncReason = (a: Account): string | null => {
+  if (a.page_count > 0) return null
+  if (!a.link?.trim()) return "لا يوجد رابط فيسبوك لهذا الحساب — أضفه من «تعديل»"
+  if (!FB_HOST.test(a.link.trim()) || FB_SKIP.test(a.link)) return "الرابط ليس رابط صفحة فيسبوك صالحًا"
+  if (FB_PROFILE.test(a.link)) return "هذا رابط حساب شخصي — فيسبوك لا يتيح قراءة بياناته؛ استخدم التحديث اليدوي"
+  return null
+}
+const syncable = (a: Account) => syncReason(a) === null
+// posts_today is only true as of the last sync, and only on the SAME CALENDAR DAY — daysSince() is a
+// rolling 24h window, so a 23:00 sync read at 08:00 would otherwise label yesterday's count «اليوم».
+// en-CA + local zone is the same bucketing the server uses (fb.js localDay / notify.js day()).
+const today = () => new Date().toLocaleDateString("en-CA")
+const todayValid = (at: string | null) => !!at && toDate(at).toLocaleDateString("en-CA") === today()
+
 const fmt = (n: number | null | undefined) => (n == null ? "—" : n.toLocaleString("en-US"))
 const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : fmt(n))
 const initials = (s: string) => s.trim().slice(0, 2).toUpperCase()
@@ -222,7 +257,15 @@ const emptyPageForm = {
   followers: "",
   posts_count: "",
 }
-const emptyQuick = { followers: "", posts_count: "", status: "active" as Status, note: "" }
+const emptyQuick = { followers: "", posts_count: "", shares: "", reactions: "", comments: "", status: "active" as Status, note: "" }
+// the three engagement counters behave exactly like posts_count in the quick dialog: you type what is
+// NEW since the last check and the running total is what gets stored
+const DELTAS = [
+  { key: "posts_count", label: "منشورات جديدة" },
+  { key: "shares", label: "مشاركات جديدة" },
+  { key: "reactions", label: "تفاعلات جديدة" },
+  { key: "comments", label: "تعليقات جديدة" },
+] as const
 const toNum = (s: string) => (s.trim() === "" ? null : Number(s))
 
 // ---------- small presentational pieces ----------
@@ -274,6 +317,33 @@ function LastCheck({ at }: { at: string | null }) {
       {late && " · متأخر"}
     </span>
   )
+}
+
+// آخر فحص، plus whatever this row's sync is doing right now. One component so the table and the
+// mobile card can never drift apart.
+function SyncCell({ at, state }: { at: string | null; state?: SyncState }) {
+  if (state === "queued")
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        <Clock className="size-3.5" />
+        في الانتظار
+      </span>
+    )
+  if (state === "running")
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-info">
+        <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" />
+        جاري المزامنة…
+      </span>
+    )
+  if (state && typeof state === "object")
+    return (
+      <Badge variant="danger" className="max-w-32" title={state.error}>
+        <AlertTriangle className="shrink-0" />
+        <span className="min-w-0 truncate">{state.error}</span>
+      </Badge>
+    )
+  return <LastCheck at={at} />
 }
 
 function CopyBtn({ value, label }: { value: string; label: string }) {
@@ -436,10 +506,22 @@ export default function Accounts() {
   const [editingPage, setEditingPage] = useState<Page | null>(null)
   const [pageForm, setPageForm] = useState(emptyPageForm)
   const [pageNotes, setPageNotes] = useState<Page | null>(null)
+  const [pendingPage, setPendingPage] = useState<number | null>(null) // ?page=<id>: shown once the profile's pages load
 
   const [quick, setQuick] = useState<{ kind: "account" | "page"; id: number; name: string; cur: Tracked } | null>(null)
   const [quickForm, setQuickForm] = useState(emptyQuick)
   const [saving, setSaving] = useState(false)
+
+  // ----- facebook sync -----
+  const [sel, setSel] = useState<Set<number>>(new Set())
+  const [sync, setSync] = useState<Record<number, SyncState>>({})
+  const [running, setRunning] = useState(false)
+  const [summary, setSummary] = useState<{ ok: number; fail: number; stopped: number; errors: [number, string][] } | null>(null)
+  const [conn, setConn] = useState<Health | null>(null)
+  const [syncingPage, setSyncingPage] = useState<number | null>(null)
+  const [confirmDel, setConfirmDel] = useState<Account | null>(null)
+  const stop = useRef(false)
+  const live = useRef<HTMLParagraphElement>(null)
 
   const profile = accounts.find((a) => a.id === profileId) ?? null
 
@@ -447,7 +529,11 @@ export default function Accounts() {
     const qs = filterUser !== "all" ? `?user_id=${filterUser}` : ""
     api
       .get(`/accounts${qs}`)
-      .then(setAccounts)
+      .then((next: Account[]) => {
+        setAccounts(next)
+        // a deleted or reassigned row must not stay selected and silently widen the next bulk run
+        setSel((s) => new Set([...s].filter((id) => next.some((a) => a.id === id))))
+      })
       .catch((e) => toast.error(e.message))
       .finally(() => setLoading(false))
   }
@@ -456,6 +542,25 @@ export default function Accounts() {
   useEffect(() => {
     if (isAdmin) api.get("/users").then(setUsers).catch((e) => toast.error(e.message))
   }, [isAdmin, me.role])
+
+  // one call per page load (the server caches the Graph round-trip for 5 min). A failure here is not
+  // worth a toast — the banner says it.
+  useEffect(() => {
+    api.get("/sync/health").then(setConn).catch(() => setConn({ connected: false, name: null, error: null }))
+  }, [])
+
+  // navigating away mid-run must not leave a loop firing POSTs at a page nobody is looking at
+  useEffect(() => () => { stop.current = true }, [])
+
+  // while the sticky bulk bar is up, keep it from covering the row a keyboard user just tabbed to
+  const barUp = sel.size > 0 || running || !!summary // same condition the bar itself mounts on
+  useEffect(() => {
+    if (!barUp) return
+    document.documentElement.style.scrollPaddingBottom = "5rem"
+    return () => {
+      document.documentElement.style.scrollPaddingBottom = ""
+    }
+  }, [barUp])
 
   const ownerOptions = <OwnerOptions users={users} groups={groups} meId={me.id} />
 
@@ -487,6 +592,22 @@ export default function Accounts() {
       })
       .catch((e) => toast.error(e.message))
   }, [me.role, ownerGroupId])
+
+  // notification deep link: open that account's profile — its notes thread, or one page's thread
+  useDeepLink(["account", "page", "tab"], !loading, (p) => {
+    const a = accounts.find((x) => x.id === Number(p.get("account")))
+    if (!a) return toast.error("الحساب لم يعد متاحًا")
+    const page = Number(p.get("page"))
+    openProfile(a, page ? "pages" : (p.get("tab") ?? "details"))
+    if (page) setPendingPage(page)
+  })
+  useEffect(() => {
+    if (!pendingPage || !pages) return
+    const pg = pages.find((x) => x.id === pendingPage)
+    setPendingPage(null)
+    if (pg) setPageNotes(pg)
+    else toast.error("الصفحة لم تعد متاحة")
+  }, [pages, pendingPage])
 
   const loadProfileData = (a: Account) => {
     api.get(`/accounts/${a.id}/events`).then(setEvents).catch((e) => toast.error(e.message))
@@ -524,9 +645,87 @@ export default function Accounts() {
     { key: "active", label: "نشطة", icon: CheckCircle2, test: (a) => a.status === "active" },
     { key: "attention", label: "تحتاج متابعة", icon: AlertTriangle, test: needsAttention },
     { key: "inactive", label: "غير نشطة", icon: PauseCircle, test: (a) => a.status !== "active" },
+    // turns scattered warning glyphs into a worklist
+    { key: "unsyncable", label: "غير قابلة للمزامنة", icon: Link2Off, test: (a) => !syncable(a) },
   ]
   const rows = base.filter(CHIPS.find((c) => c.key === chip)!.test)
   const filtered = rows.length !== accounts.length
+
+  // ----- sync: selection + the run itself -----
+  // select-all covers the VISIBLE, syncable rows only — there is no "select the whole dataset"
+  // escalation, so a filtered view can never launch a run the user cannot see.
+  const selectable = rows.filter(syncable)
+  const target = rows.filter((a) => sel.has(a.id) && syncable(a))
+  const selHidden = sel.size - rows.filter((a) => sel.has(a.id)).length
+  const selSkipped = rows.filter((a) => sel.has(a.id)).length - target.length
+  const allSel = selectable.length > 0 && target.length === selectable.length
+  const syncTotal = Object.keys(sync).length
+  const syncDone = Object.values(sync).filter((s) => s === "ok" || typeof s === "object").length
+  const toggle = (id: number) =>
+    setSel((s) => {
+      const n = new Set(s)
+      if (!n.delete(id)) n.add(id)
+      return n
+    })
+  const toggleAll = () =>
+    setSel((s) => {
+      const n = new Set(s)
+      for (const a of selectable) allSel ? n.delete(a.id) : n.add(a.id)
+      return n
+    })
+
+  // ponytail: serial — ~1s per account, and rate limits are the binding constraint anyway. A bounded
+  // worker pool is the upgrade path if 40 rows ever feels slow.
+  const runSync = async (ids: number[]) => {
+    if (!ids.length || running) return
+    if (!navigator.onLine) return toast.error("أنت غير متصل بالإنترنت — المزامنة تحتاج اتصالًا مباشرًا")
+    stop.current = false
+    setRunning(true)
+    setSummary(null)
+    setSync(Object.fromEntries(ids.map((id) => [id, "queued" as SyncState])))
+    if (live.current) live.current.textContent = `بدأت مزامنة ${ids.length} حساب`
+    let ok = 0
+    let ran = 0
+    const errors: [number, string][] = []
+    for (const id of ids) {
+      if (stop.current) break
+      ran++
+      setSync((s) => ({ ...s, [id]: "running" }))
+      try {
+        // one row's pages are synced inside this same call — see POST /accounts/:id/sync
+        const res = await api.post(`/accounts/${id}/sync`)
+        // account_skipped = the account's own link is not a Page; its pages are what carry the value,
+        // so that alone is not a failure. A page that failed always is.
+        const failures = [
+          ...(res.account_error && !res.account_skipped ? [res.account_error] : []),
+          ...((res.pages ?? []) as { ok: boolean; error: string }[]).filter((p) => !p.ok).map((p) => p.error),
+        ]
+        if (failures.length) throw new Error(failures[0])
+        setSync((s) => ({ ...s, [id]: "ok" }))
+        ok++
+      } catch (e) {
+        const msg = (e as Error).message
+        setSync((s) => ({ ...s, [id]: { error: msg } }))
+        errors.push([id, msg])
+      }
+    }
+    const stopped = ids.length - ran
+    // rows that never ran must not sit on «في الانتظار» forever — nothing else clears them
+    if (stopped) setSync((s) => Object.fromEntries(Object.entries(s).filter(([, v]) => v !== "queued")))
+    setRunning(false)
+    setSummary({ ok, fail: errors.length, stopped, errors })
+    if (live.current)
+      live.current.textContent = stopped
+        ? `تم إيقاف المزامنة: نجحت ${ok}، فشلت ${errors.length}، لم تبدأ ${stopped}`
+        : `انتهت المزامنة: نجحت ${ok}، فشلت ${errors.length}`
+    // exactly one toast per run — a per-row toast for 20 rows is a wall. A stopped run is neither a
+    // success nor a failure: saying "تمت مزامنة 3 حساب بنجاح" after إيقاف hides the 17 that never ran.
+    if (stopped) toast.info(`تم إيقاف المزامنة — تمت مزامنة ${ok} من ${ids.length}`)
+    else if (!errors.length) toast.success(`تمت مزامنة ${ok} حساب بنجاح`)
+    else if (ok) toast.warning(`تمت مزامنة ${ok} ونجحت جزئيًا — فشل ${errors.length}`)
+    else toast.error(`تعذّرت المزامنة — فشل ${errors.length} حساب`)
+    refreshAll()
+  }
 
   // ----- account create / edit -----
   const openCreate = () => {
@@ -677,8 +876,9 @@ export default function Accounts() {
     if (!quick) return
     const body: Record<string, unknown> = {}
     if (quickForm.followers.trim() !== "") body.followers = Number(quickForm.followers)
-    // the field holds NEW posts since the last check — the server stores the running total
-    if (quickForm.posts_count.trim() !== "") body.posts_count = (quick.cur.posts_count ?? 0) + Number(quickForm.posts_count)
+    // these fields hold what is NEW since the last check — the server stores the running total
+    for (const d of DELTAS)
+      if (quickForm[d.key].trim() !== "") body[d.key] = (quick.cur[d.key] ?? 0) + Number(quickForm[d.key])
     if (quickForm.status !== quick.cur.status) body.status = quickForm.status
     if (quickForm.note.trim()) body.note = quickForm.note.trim()
     setSaving(true)
@@ -691,6 +891,20 @@ export default function Accounts() {
       toast.error((e as Error).message)
     } finally {
       setSaving(false)
+    }
+  }
+
+  // one page on its own — POST /pages/:id/sync. Toasts directly: it is a single deliberate click.
+  const syncPage = async (p: Page) => {
+    setSyncingPage(p.id)
+    try {
+      await api.post(`/pages/${p.id}/sync`)
+      toast.success(`تمت مزامنة «${p.name}»`)
+      refreshAll()
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setSyncingPage(null)
     }
   }
 
@@ -731,46 +945,81 @@ export default function Accounts() {
     </Select>
   )
 
-  const deleteAccount = (a: Account) => (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="icon-lg" className="hover:text-destructive" aria-label="حذف" title="حذف">
-          <Trash2 />
+  // An un-syncable row never gets a DISABLED checkbox: Radix drops it out of the tab order, so a
+  // keyboard user meets a row they cannot select and has no way to learn why. They get a focusable
+  // repair button instead, carrying the reason and opening تعديل on the الرابط field.
+  const selectCell = (a: Account) => {
+    const reason = syncReason(a)
+    if (reason)
+      return (
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          className="text-muted-foreground hover:text-warning"
+          aria-label={`«${a.name}» غير قابل للمزامنة: ${reason} — اضغط للإصلاح`}
+          title={reason}
+          onClick={() => openEdit(a)}
+        >
+          <Link2Off />
         </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>حذف الحساب؟</AlertDialogTitle>
-          <AlertDialogDescription>سيتم حذف «{a.name}» وجميع صفحاته وسجل نشاطه نهائيًا.</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>إلغاء</AlertDialogCancel>
-          <AlertDialogAction onClick={() => remove(a)}>حذف</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
+      )
+    return (
+      <label className="flex size-10 cursor-pointer items-center justify-center">
+        <Checkbox
+          checked={sel.has(a.id)}
+          disabled={running}
+          onCheckedChange={() => toggle(a.id)}
+          aria-label={`تحديد «${a.name}»`}
+        />
+      </label>
+    )
+  }
 
   const actions = (a: Account) => (
     <div className="flex flex-wrap justify-end gap-1">
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        className="text-info"
+        disabled={!conn?.connected || running || !syncable(a)}
+        aria-label="مزامنة الآن"
+        title={conn?.connected ? "مزامنة الحساب وصفحاته من فيسبوك" : "المزامنة غير مفعّلة — لم يتم ربط فيسبوك"}
+        onClick={() => runSync([a.id])}
+      >
+        {sync[a.id] === "running" ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <RefreshCw />}
+      </Button>
       <Button variant="ghost" size="icon-lg" className="text-primary" aria-label="تحديث سريع" title="تحديث سريع" onClick={() => openQuick("account", a)}>
         <Zap />
       </Button>
-      {a.link && (
-        <Button asChild variant="ghost" size="icon-lg" aria-label="فتح الرابط" title="فتح الرابط">
-          <a href={a.link} target="_blank" rel="noreferrer">
-            <ExternalLink />
-          </a>
-        </Button>
-      )}
       <NotesButton count={a.note_count} label="الملاحظات الخاصة" onClick={() => openProfile(a, "notes")} />
-      <Button variant="ghost" size="icon-lg" aria-label="ملف الحساب" title="ملف الحساب" onClick={() => openProfile(a)}>
-        <Eye />
-      </Button>
-      <Button variant="ghost" size="icon-lg" aria-label="تعديل" title="تعديل" onClick={() => openEdit(a)}>
-        <Pencil />
-      </Button>
-      {deleteAccount(a)}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon-lg" aria-label={`خيارات «${a.name}»`} title="خيارات">
+            <MoreHorizontal />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-44">
+          <DropdownMenuItem className="cursor-pointer" onSelect={() => openProfile(a)}>
+            <Eye />
+            ملف الحساب
+          </DropdownMenuItem>
+          {a.link && (
+            <DropdownMenuItem className="cursor-pointer" onSelect={() => window.open(ext(a.link!), "_self")}>
+              <ExternalLink />
+              فتح الرابط
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem className="cursor-pointer" onSelect={() => openEdit(a)}>
+            <Pencil />
+            تعديل
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" className="cursor-pointer" onSelect={() => setConfirmDel(a)}>
+            <Trash2 />
+            حذف
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 
@@ -872,6 +1121,22 @@ export default function Accounts() {
           </div>
         </CardHeader>
 
+        {/* facebook not connected: every sync control is already disabled — this says why */}
+        {conn && !conn.connected && (
+          <div className="mx-4 mb-1 rounded-lg border border-primary/20 bg-primary-light px-4 py-3 md:mx-6">
+            <p className="flex items-center gap-2 text-sm font-semibold text-primary">
+              <Info className="size-4" />
+              لم يتم ربط فيسبوك بعد
+            </p>
+            <p className="mt-1 text-xs text-primary/80">
+              {isAdmin
+                ? "اربط فيسبوك من إعدادات الخادم (FB_TOKEN) لتفعيل المزامنة التلقائية. التحديث اليدوي يعمل كالمعتاد."
+                : "المزامنة التلقائية غير مفعّلة — تواصل مع مدير النظام. التحديث اليدوي يعمل كالمعتاد."}
+              {conn.error && <span className="ms-1 opacity-75">({conn.error})</span>}
+            </p>
+          </div>
+        )}
+
         {/* quick-filter chips */}
         <div className="flex flex-wrap gap-2 border-b border-dashed px-4 py-3 md:px-6" role="group" aria-label="تصفية سريعة">
           {CHIPS.map((c) => {
@@ -964,21 +1229,34 @@ export default function Accounts() {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-dashed">
-                      <TableHead className={cn(th, "w-10")}>#</TableHead>
+                      <TableHead className={cn(th, "w-10")}>
+                        <label className="flex size-10 cursor-pointer items-center justify-center">
+                          <Checkbox
+                            checked={allSel ? true : target.length ? "indeterminate" : false}
+                            disabled={running || selectable.length === 0}
+                            onCheckedChange={toggleAll}
+                            aria-label={`تحديد كل الحسابات الظاهرة (${selectable.length})`}
+                          />
+                        </label>
+                      </TableHead>
                       <TableHead className={th}>الحساب</TableHead>
                       {isAdmin && <TableHead className={th}>المالك</TableHead>}
                       <TableHead className={th}>التواصل</TableHead>
                       <TableHead className={th}>المتابعون</TableHead>
                       <TableHead className={th}>المنشورات</TableHead>
-                      <TableHead className={th}>آخر فحص</TableHead>
+                      <TableHead className={cn(th, "w-44")}>آخر فحص</TableHead>
                       <TableHead className={th}>الصفحات</TableHead>
-                      <TableHead className="w-64" />
+                      <TableHead className="w-44" />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {rows.map((a, i) => (
-                      <TableRow key={a.id} className="border-dashed transition-colors duration-150">
-                        <TableCell className="text-xs text-muted-foreground tabular-nums">{i + 1}</TableCell>
+                    {rows.map((a) => (
+                      <TableRow
+                        key={a.id}
+                        className="border-dashed transition-colors duration-150"
+                        data-state={sel.has(a.id) ? "selected" : undefined}
+                      >
+                        <TableCell className="p-0 ps-2">{selectCell(a)}</TableCell>
                         <TableCell>
                           <div className="flex items-center gap-3">
                             <Tile name={a.name} />
@@ -997,9 +1275,16 @@ export default function Accounts() {
                         {isAdmin && <TableCell className="whitespace-nowrap">{a.owner_name}</TableCell>}
                         <TableCell className="max-w-56">{contact(a)}</TableCell>
                         <TableCell>{followersCell(a)}</TableCell>
-                        <TableCell className="tabular-nums">{fmt(a.posts_count)}</TableCell>
+                        <TableCell className="tabular-nums">
+                          {fmt(a.posts_count)}
+                          {todayValid(a.last_checked_at) && a.posts_today != null && (
+                            <Badge variant="info" className="ms-1.5 tabular-nums" title="منشورات اليوم">
+                              اليوم {a.posts_today}
+                            </Badge>
+                          )}
+                        </TableCell>
                         <TableCell className="whitespace-nowrap">
-                          <LastCheck at={a.last_checked_at} />
+                          <SyncCell at={a.last_checked_at} state={sync[a.id]} />
                         </TableCell>
                         <TableCell>
                           {a.allows_pages ? (
@@ -1028,8 +1313,17 @@ export default function Accounts() {
               {/* <md: stacked cards */}
               <div className="space-y-3 md:hidden">
                 {rows.map((a) => (
-                  <div key={a.id} className={cn("space-y-3 rounded-lg border p-4", needsAttention(a) && "border-s-4 border-s-destructive")}>
+                  <div
+                    key={a.id}
+                    className={cn(
+                      "space-y-3 rounded-lg border p-4",
+                      needsAttention(a) && "border-s-4 border-s-destructive",
+                      // a different edge from the attention border, so the two never fight
+                      sel.has(a.id) && "ring-2 ring-primary",
+                    )}
+                  >
                     <div className="flex items-center gap-3">
+                      {selectCell(a)}
                       <Tile name={a.name} />
                       <div className="min-w-0 flex-1">
                         <p className="truncate font-semibold">{a.name}</p>
@@ -1045,6 +1339,12 @@ export default function Accounts() {
                       <Badge variant="primary-light">{a.type_name}</Badge>
                       <StatusBadge status={a.status} />
                       {a.site_name && <Badge variant="secondary">{a.site_name}</Badge>}
+                      {!syncable(a) && (
+                        <Badge variant="warning">
+                          <Link2Off />
+                          غير قابلة للمزامنة
+                        </Badge>
+                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-2 text-sm">
                       <div className="rounded-md bg-muted/50 p-2">
@@ -1053,11 +1353,16 @@ export default function Accounts() {
                       </div>
                       <div className="rounded-md bg-muted/50 p-2">
                         <p className="text-xs text-muted-foreground">المنشورات</p>
-                        <p className="font-semibold tabular-nums">{fmt(a.posts_count)}</p>
+                        <p className="font-semibold tabular-nums">
+                          {fmt(a.posts_count)}
+                          {todayValid(a.last_checked_at) && a.posts_today != null && (
+                            <span className="ms-1.5 text-xs font-medium text-info">اليوم {a.posts_today}</span>
+                          )}
+                        </p>
                       </div>
                       <div className="rounded-md bg-muted/50 p-2">
                         <p className="text-xs text-muted-foreground">آخر فحص</p>
-                        <LastCheck at={a.last_checked_at} />
+                        <SyncCell at={a.last_checked_at} state={sync[a.id]} />
                       </div>
                       <div className="rounded-md bg-muted/50 p-2">
                         <p className="text-xs text-muted-foreground">الصفحات</p>
@@ -1071,6 +1376,87 @@ export default function Accounts() {
               </div>
             </>
           )}
+
+          {/* Sticky INSIDE the card, never viewport-fixed: main content already carries the RTL
+              sidebar offset, so this can't overlap it, and z-20 sits under the sidebar's z-40.
+              Controls at the inline start — the Toaster paints the opposite corner. */}
+          {barUp && (
+            <div className="sticky bottom-0 z-20 -mx-4 -mb-4 mt-4 flex flex-wrap items-center gap-3 border-t bg-card/95 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur md:-mx-6 md:-mb-6 md:px-6">
+              {running ? (
+                <>
+                  <Button variant="outline" onClick={() => (stop.current = true)}>
+                    <XCircle />
+                    إيقاف
+                  </Button>
+                  <progress className="h-2 w-28 rounded-full" value={syncDone} max={syncTotal} aria-hidden />
+                  <span aria-hidden className="text-sm text-muted-foreground">
+                    جاري المزامنة… {syncDone} من {syncTotal}
+                  </span>
+                </>
+              ) : summary ? (
+                <>
+                  {summary.fail > 0 && (
+                    <Button variant="outline" onClick={() => runSync(summary.errors.map(([id]) => id))}>
+                      <RefreshCw />
+                      إعادة محاولة الفاشلة ({summary.fail})
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={() => { setSummary(null); setSync({}) }}>
+                    إغلاق
+                  </Button>
+                  <div className="min-w-0 flex-1">
+                    <p
+                      className={cn(
+                        "text-sm font-medium",
+                        summary.stopped > 0 ? "text-muted-foreground" : summary.fail === 0 ? "text-success" : summary.ok ? "text-warning" : "text-destructive",
+                      )}
+                    >
+                      {summary.stopped > 0 && "تم الإيقاف · "}
+                      تمت مزامنة {summary.ok} من {summary.ok + summary.fail + summary.stopped}
+                      {summary.fail > 0 && ` · فشلت ${summary.fail}`}
+                      {summary.stopped > 0 && ` · لم تبدأ ${summary.stopped}`}
+                    </p>
+                    {summary.fail > 0 && (
+                      <details open={summary.ok === 0} className="mt-1">
+                        <summary className="cursor-pointer text-xs text-muted-foreground">عرض التفاصيل ({summary.fail})</summary>
+                        <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                          {/* grouped by reason: "انتهت صلاحية رمز فيسبوك ×17" reads as ONE problem */}
+                          {[...summary.errors.reduce((m, [, msg]) => m.set(msg, (m.get(msg) ?? 0) + 1), new Map<string, number>())].map(
+                            ([msg, n]) => (
+                              <li key={msg}>
+                                {msg}
+                                {n > 1 && <span className="tabular-nums"> ×{n}</span>}
+                              </li>
+                            ),
+                          )}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Button
+                    disabled={!conn?.connected || target.length === 0}
+                    title={conn?.connected ? undefined : "المزامنة غير مفعّلة — لم يتم ربط فيسبوك"}
+                    onClick={() => runSync(target.map((a) => a.id))}
+                  >
+                    <RefreshCw />
+                    مزامنة المحدد ({target.length})
+                  </Button>
+                  <Button variant="outline" onClick={() => setSel(new Set())}>
+                    مسح التحديد
+                  </Button>
+                  <p className="min-w-0 flex-1 text-xs text-muted-foreground">
+                    {target.length} محدّدة
+                    {selSkipped > 0 && ` · ${selSkipped} غير قابلة للمزامنة — سيتم تجاهلها`}
+                    {selHidden > 0 && ` · ${selHidden} محدّدة خارج التصفية الحالية`}
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+          <p ref={live} className="sr-only" role="status" aria-live="polite" />
         </CardContent>
       </Card>
 
@@ -1233,14 +1619,34 @@ export default function Accounts() {
                       <LastCheck at={profile.last_checked_at} />
                     </DialogDescription>
                   </div>
-                  {profile.link && (
-                    <Button asChild variant="light" size="sm" className="hidden sm:inline-flex">
-                      <a href={profile.link} target="_blank" rel="noreferrer">
-                        <ExternalLink />
-                        فتح الرابط
-                      </a>
+                  <div className="hidden shrink-0 gap-2 sm:flex">
+                    <Button
+                      variant="light"
+                      size="sm"
+                      disabled={!conn?.connected || running || !syncable(profile)}
+                      title={
+                        conn?.connected
+                          ? (syncReason(profile) ?? undefined)
+                          : "المزامنة غير مفعّلة — لم يتم ربط فيسبوك"
+                      }
+                      onClick={() => runSync([profile.id])}
+                    >
+                      {sync[profile.id] === "running" ? (
+                        <LoaderCircle className="animate-spin motion-reduce:animate-none" />
+                      ) : (
+                        <RefreshCw />
+                      )}
+                      {profile.page_count > 0 ? `مزامنة الحساب وصفحاته (${profile.page_count})` : "مزامنة الآن"}
                     </Button>
-                  )}
+                    {profile.link && (
+                      <Button asChild variant="light" size="sm">
+                        <a href={ext(profile.link)} rel="noreferrer">
+                          <ExternalLink />
+                          فتح الرابط
+                        </a>
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </DialogHeader>
 
@@ -1304,7 +1710,7 @@ export default function Accounts() {
                     <Field icon={ExternalLink} label="الرابط" value={profile.link} ltr copyable>
                       {profile.link && (
                         <Button asChild variant="ghost" size="icon-lg" className="text-muted-foreground hover:text-foreground" aria-label="فتح الرابط" title="فتح الرابط">
-                          <a href={profile.link} target="_blank" rel="noreferrer">
+                          <a href={ext(profile.link)} rel="noreferrer">
                             <ExternalLink />
                           </a>
                         </Button>
@@ -1375,8 +1781,7 @@ export default function Accounts() {
                                 <p className="truncate font-medium">{p.name}</p>
                                 {p.url && (
                                   <a
-                                    href={p.url}
-                                    target="_blank"
+                                    href={ext(p.url)}
                                     rel="noreferrer"
                                     className="block truncate text-xs text-muted-foreground hover:text-primary hover:underline"
                                     dir="ltr"
@@ -1395,6 +1800,17 @@ export default function Accounts() {
                               </div>
                               <div className="flex gap-1">
                                 <NotesButton count={p.note_count} label="الملاحظات الخاصة" onClick={() => setPageNotes(p)} />
+                                <Button
+                                  variant="ghost"
+                                  size="icon-lg"
+                                  className="text-info"
+                                  disabled={!conn?.connected || !p.url || syncingPage === p.id}
+                                  aria-label="مزامنة الصفحة"
+                                  title={p.url ? "مزامنة هذه الصفحة من فيسبوك" : "لا يوجد رابط لهذه الصفحة — أضفه من «تعديل»"}
+                                  onClick={() => syncPage(p)}
+                                >
+                                  {syncingPage === p.id ? <LoaderCircle className="animate-spin motion-reduce:animate-none" /> : <RefreshCw />}
+                                </Button>
                                 <Button variant="ghost" size="icon-lg" className="text-primary" aria-label="تحديث سريع" title="تحديث سريع" onClick={() => openQuick("page", p)}>
                                   <Zap />
                                 </Button>
@@ -1547,6 +1963,20 @@ export default function Accounts() {
         </DialogContent>
       </Dialog>
 
+      {/* ---------- delete account ---------- */}
+      <AlertDialog open={!!confirmDel} onOpenChange={(o) => !o && setConfirmDel(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>حذف الحساب؟</AlertDialogTitle>
+            <AlertDialogDescription>سيتم حذف «{confirmDel?.name}» وجميع صفحاته وسجل نشاطه نهائيًا.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>إلغاء</AlertDialogCancel>
+            <AlertDialogAction onClick={() => confirmDel && remove(confirmDel)}>حذف</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* ---------- page private notes ---------- */}
       <Dialog open={!!pageNotes} onOpenChange={(o) => !o && setPageNotes(null)}>
         <DialogContent className="sm:max-w-lg">
@@ -1629,7 +2059,7 @@ export default function Accounts() {
               تحديث سريع — {quick?.name}
             </DialogTitle>
             <DialogDescription>
-              أدخل عدد المتابعين أو الأصدقاء الحالي كما يظهر في المنصة، وعدد المنشورات الجديدة منذ آخر فحص — تُضاف تلقائيًا إلى الإجمالي. اترك الحقل فارغًا إن لم يتغير؛ الحفظ بلا تغييرات يسجّل عملية فحص فقط.
+              أدخل عدد المتابعين الحالي كما يظهر في المنصة. أما المنشورات والمشاركات والتفاعلات والتعليقات فأدخل الجديد منها منذ آخر فحص — يُضاف تلقائيًا إلى الإجمالي. اترك الحقل فارغًا إن لم يتغير؛ الحفظ بلا تغييرات يسجّل عملية فحص فقط.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
@@ -1645,22 +2075,24 @@ export default function Accounts() {
                   onChange={(e) => setQuickForm({ ...quickForm, followers: e.target.value })}
                 />
               </div>
-              <div className="grid gap-1.5">
-                <Label>منشورات جديدة</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  inputMode="numeric"
-                  placeholder="أضيفت منذ آخر فحص"
-                  value={quickForm.posts_count}
-                  onChange={(e) => setQuickForm({ ...quickForm, posts_count: e.target.value })}
-                />
-                <p className="text-xs text-muted-foreground">
-                  {quickForm.posts_count.trim() !== ""
-                    ? `الإجمالي بعد الحفظ: ${fmt((quick?.cur.posts_count ?? 0) + Number(quickForm.posts_count))}`
-                    : `الإجمالي الحالي: ${fmt(quick?.cur.posts_count)}`}
-                </p>
-              </div>
+              {DELTAS.map((d) => (
+                <div key={d.key} className="grid gap-1.5">
+                  <Label>{d.label}</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    inputMode="numeric"
+                    placeholder="أضيفت منذ آخر فحص"
+                    value={quickForm[d.key]}
+                    onChange={(e) => setQuickForm({ ...quickForm, [d.key]: e.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {quickForm[d.key].trim() !== ""
+                      ? `الإجمالي بعد الحفظ: ${fmt((quick?.cur[d.key] ?? 0) + Number(quickForm[d.key]))}`
+                      : `الإجمالي الحالي: ${fmt(quick?.cur[d.key])}`}
+                  </p>
+                </div>
+              ))}
             </div>
             <div className="grid gap-1.5">
               <Label>الحالة</Label>

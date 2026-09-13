@@ -34,6 +34,10 @@ async function request(path: string, init: RequestInit = {}): Promise<any> {
   const json = !(init.body instanceof FormData)
   const res = await net(`${BASE}/api${scopedPath(path)}`, {
     ...init,
+    // links now navigate this same window (no target="_blank"), which tears the SPA down mid-flight —
+    // a subtask note saves on blur, and blurring INTO the adjacent link would otherwise drop the PUT.
+    // ponytail: not on FormData — keepalive caps the body at 64KB and chat uploads are up to 5MB.
+    keepalive: json,
     headers: { ...(json ? { "Content-Type": "application/json" } : {}), ...authHeaders() },
   })
   if (res.status === 401 && path !== "/login") {

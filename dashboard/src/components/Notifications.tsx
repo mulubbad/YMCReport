@@ -11,6 +11,7 @@ import {
   ClipboardPlus,
   Clock,
   MessageCircle,
+  MessageSquare,
   ScanSearch,
   ShieldAlert,
   UserRoundCheck,
@@ -29,6 +30,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 import { enablePush, needsRegister, pushState, syncPush } from "@/lib/push"
 import { cn } from "@/lib/utils"
+
+export type NotificationKind = keyof typeof KINDS
 
 export type Notification = {
   id: number
@@ -49,6 +52,7 @@ export const KINDS = {
   account_status: { label: "تغيّر حالة حساب", icon: ShieldAlert, tone: "bg-danger-light text-destructive" },
   task_nudge: { label: "تذكير", icon: BellRing, tone: "bg-warning-light text-warning" },
   message: { label: "رسالة خاصة", icon: MessageCircle, tone: "bg-info-light text-info" },
+  comment: { label: "تعليق جديد", icon: MessageSquare, tone: "bg-info-light text-info" },
   mention: { label: "إشارة إليك", icon: AtSign, tone: "bg-primary-light text-primary" },
   profile_request: { label: "طلب تعديل بيانات", icon: UserRoundPen, tone: "bg-primary-light text-primary" },
   profile_reviewed: { label: "مراجعة طلب تعديل", icon: UserRoundCheck, tone: "bg-success-light text-success" },

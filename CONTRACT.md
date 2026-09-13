@@ -156,16 +156,17 @@ shadcn "new-york", base color neutral, CSS-variable theming, **primary = indigo-
 
 ## Account tracking (smart trackability)
 Schema additions (migrate existing DBs via pragma table_info + ALTER ADD COLUMN; enums enforced in routes):
-- `accounts` + `pages`: `status TEXT NOT NULL DEFAULT 'active'` (active|restricted|suspended|closed), `followers INTEGER`, `posts_count INTEGER`, `last_checked_at TEXT`.
-- `account_events` (auto audit trail): `id, account_id → accounts ON DELETE CASCADE, page_id → pages ON DELETE SET NULL, user_id → users ON DELETE SET NULL (actor), kind TEXT (created|updated|status|metrics|note|page_created|page_updated|page_deleted|checked), summary TEXT NOT NULL (Arabic, human-readable, never includes password values), data TEXT (JSON: field diff {field:{from,to}} or metrics {followers,posts_count}), created_at`.
+- `accounts` + `pages`: `status TEXT NOT NULL DEFAULT 'active'` (active|restricted|suspended|closed), `followers INTEGER`, `posts_count INTEGER`, `shares INTEGER`, `reactions INTEGER`, `comments INTEGER`, `last_checked_at TEXT`, plus two **sync-only** columns written by the Facebook sync alone (never in `TRACK`, never accepted on POST/PUT): `posts_today INTEGER` (posts published today as of the last sync — only meaningful while `last_checked_at` is today, which is why the UI hides it otherwise; it is out of `TRACK` because a tracked one would log a `metrics` drop every midnight) and `sync_seen TEXT` (`{n: <live name last observed>, p: {post-id: [shares, reactions, comments]}}` — the baseline the engagement deltas diff against).
+- `account_events` (auto audit trail): `id, account_id → accounts ON DELETE CASCADE, page_id → pages ON DELETE SET NULL, user_id → users ON DELETE SET NULL (actor), kind TEXT (created|updated|status|metrics|note|page_created|page_updated|page_deleted|checked), summary TEXT NOT NULL (Arabic, human-readable, never includes password values), data TEXT (JSON: field diff {field:{from,to}} or metrics {followers,posts_count,shares,reactions,comments} + `via:'sync'` when the Facebook sync wrote it), created_at`.
 Labels: status active=نشط، restricted=مقيّد، suspended=موقوف، closed=مغلق. Kinds: created=إنشاء، updated=تعديل، status=تغيير الحالة، metrics=تحديث الإحصائيات، note=ملاحظة، page_created=إضافة صفحة، page_updated=تعديل صفحة، page_deleted=حذف صفحة، checked=فحص.
 API:
-- GET /accounts rows add `status, followers, posts_count, last_checked_at, prev_followers` (followers value from the metrics event before the latest one; null if none). Pages rows add the same 4 fields.
-- POST/PUT /accounts(:id) and pages accept status/followers/posts_count. Every mutation logs events automatically: create → created; PUT → `updated` with a diff summary ("تم تعديل: الاسم، البريد الإلكتروني"; password change noted as "كلمة المرور" with no values), status change → `status`, followers/posts_count change → `metrics` (+ sets last_checked_at = now); page create/update/delete → page_* on the parent account with page_id.
-- POST /accounts/:id/updates and POST /pages/:id/updates `{followers?, posts_count?, status?, note?}` — quick update: applies given fields, sets last_checked_at = now, logs metrics/status/note events (nothing given → `checked` "تم فحص الحساب"). Returns the updated row (list shape).
+- GET /accounts rows add `status, followers, posts_count, shares, reactions, comments, posts_today, last_checked_at, prev_followers` (followers value from the metrics event before the latest one; null if none). Pages rows add the same fields.
+- POST/PUT /accounts(:id) and pages accept status/followers/posts_count/shares/reactions/comments. Every mutation logs events automatically: create → created; PUT → `updated` with a diff summary ("تم تعديل: الاسم، البريد الإلكتروني"; password change noted as "كلمة المرور" with no values), status change → `status`, a change to ANY non-status TRACK number → `metrics` (+ sets last_checked_at = now); page create/update/delete → page_* on the parent account with page_id.
+- `TRACK = ['status','followers','posts_count','shares','reactions','comments']` in `routes/accounts.js` is the single source: `FIELDS`/`PAGE_FIELDS` spread it, `trackError` and `metricsSummary` derive from it, the `metrics` trigger in `logDiff` tests it, and `quickUpdate`'s UPDATE is built from it — a hardcoded column list in any of those persists a value while logging no history, silently.
+- POST /accounts/:id/updates and POST /pages/:id/updates `{followers?, posts_count?, shares?, reactions?, comments?, status?, note?}` — quick update: applies given fields, sets last_checked_at = now, logs metrics/status/note events (nothing given → `checked` "تم فحص الحساب"). Returns the updated row (list shape). In the UI every counter except followers is entered as *what is new since the last check* and the client adds it to the running total.
 - GET /accounts/:id/events (?limit=100, default 100) → newest first, with `actor_name`, `page_name`; same scope rules as the account. Rows include `page_id` (null for account-level events). Account-level metrics (`prev_followers`, the UI followers chart) consider only events with `page_id` null — page readings never pollute the account series.
 - GET /stats adds `accounts_attention` = in-scope accounts with status ≠ active OR last_checked_at null OR older than 14 days (ponytail: 14d constant `STALE_DAYS`, shared by UI).
-- Export: accounts + pages sheets add الحالة، المتابعون، عدد المنشورات، آخر فحص; new sheet key `events` "سجل التحديثات" (التاريخ، الحساب، الصفحة، المستخدم، النوع، الوصف), honoring user/type/date filters.
+- Export: accounts + pages sheets add الحالة، المتابعون، عدد المنشورات، منشورات اليوم، المشاركات، التفاعلات، التعليقات، آخر فحص (`TRACK_COLS` and `track()` in export.js are positional — they must stay in the same order or every later cell shifts); new sheet key `events` "سجل التحديثات" (التاريخ، الحساب، الصفحة، المستخدم، النوع، الوصف), honoring user/type/date filters.
 UI (Accounts page): quick-filter chips الكل / نشطة / تحتاج متابعة / غير نشطة; list shows status badge, followers with delta arrow vs prev_followers, last check relative time (red when stale/never); account profile dialog with tabs التفاصيل / الصفحات / النشاط (timeline) / الإحصائيات (followers SVG sparkline + growth %); quick-update dialog (تحديث سريع) for accounts and pages; copy-to-clipboard on credentials.
 
 ## Team collaboration on tasks
@@ -179,7 +180,7 @@ API:
 UI (Tasks page): "نبض الفريق" card (group name, members' completion rings, team % bar, Trophy on top performer, "أنت" highlight) visible to admin+users of a group; admin-only "ملخص الأسبوع" builds a 3P text (التقدم/الخطط/المشكلات) from the loaded tasks + team (copy / navigator.share). **Compact Jira-style cards**: kind icon tile, title (click = expand), status badge from the derived category `laneOf(complete, started, dayDiff)`: مكتملة / متأخرة (due < today) / قريبة الاستحقاق (≤3d) / قيد التنفيذ (started) / لم تبدأ — meta line (kind · category · عالية badge · compact due chip · creator · relative time), then a tracking row: `MemberStack` avatars (done = success tick, pending = muted initials; click → تفاصيل الإنجاز for admins), "n/total أنجزوا", member quick toggle (checkbox when no subtasks / segmented n/m when subtasks), "نقاش" count, admin "⋯" menu (تفاصيل الإنجاز / تعديل / أرشفة|استعادة / حذف). Details collapse by default for admins and for completed tasks; members' pending tasks open expanded (subtask rows + notes; with subtasks there is no task-level checkbox). Cards ⇄ board toggle (board = one lane per category, persisted in `localStorage.tasksView`); status chips/filter use the same 5 categories + "غير مكتملة". تفاصيل الإنجاز dialog lists EVERY member (from /tasks/team) with منجز / قيد التنفيذ / لم يبدأ. Comments dialog: chat bubbles, @mention picker from team admins+members, Ctrl+Enter send, delete own/admin with confirm. Comments are not exported. Sidebar nav is grouped into sections (نظرة عامة / العمل / الإدارة / التقارير); sections with no role-visible items are hidden.
 
 ## Notifications (polling, in-app)
-Table `notifications`: `id, user_id → users ON DELETE CASCADE, key TEXT NOT NULL, kind TEXT (task_new|task_due_soon|task_overdue|task_done|account_stale|account_status|task_nudge|message — CHECK enum; db.js rebuilds older tables once), title TEXT NOT NULL, body TEXT, link TEXT (SPA route), read INTEGER NOT NULL DEFAULT 0, created_at`; `UNIQUE(user_id, key)` (idempotent generation via INSERT OR IGNORE), index (user_id, id).
+Table `notifications`: `id, user_id → users ON DELETE CASCADE, key TEXT NOT NULL, kind TEXT (task_new|task_due_soon|task_overdue|task_done|account_stale|account_status|task_nudge|message|mention|comment — CHECK enum; db.js rebuilds older tables once), title TEXT NOT NULL, body TEXT, link TEXT (SPA route), read INTEGER NOT NULL DEFAULT 0, created_at`; `UNIQUE(user_id, key)` (idempotent generation via INSERT OR IGNORE), index (user_id, id).
 Generation — helper `notify(userIds, {key, kind, title, body, link})`:
 - POST /tasks → every active member of the task's group except the creator: `task_new`, key `task:{id}:new`, title "مهمة جديدة: {title}", body = kind label (+ "الاستحقاق {due_date}" when set), link `/tasks`.
 - PUT /tasks/:id/interactions → when the caller's completion of the task flips to complete (same all-subtasks rule as progress): group admins (role admin, same group) except the caller: `task_done`, key `task:{id}:done:{userId}`, title "إنجاز مهمة: {title}", body "بواسطة {name}" (+ notes), link `/tasks`.
@@ -244,7 +245,7 @@ Frontend: `lib/push.ts` — Firebase web config (project `ymc-team`) + `getToken
 
 ## Group chat (المحادثة) — real-time, mentions, hashtags, images
 One room per group (members + its admins; super may open any group via `?group_id`). Real-time = **SSE** (`EventSource`), no WebSocket library.
-Tables: `chat_messages (id, group_id → groups ON DELETE CASCADE, user_id → users ON DELETE SET NULL, body TEXT, image_key TEXT, mentions TEXT (JSON [user_id]), hashtags TEXT (JSON [tag]), pinned INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, created_at)` + index (group_id, id); `chat_reads (user_id PRIMARY KEY → users ON DELETE CASCADE, last_read_id INTEGER NOT NULL DEFAULT 0)`.
+Tables: `chat_messages (id, group_id → groups ON DELETE CASCADE, user_id → users ON DELETE SET NULL, body TEXT, image_key TEXT, mentions TEXT (JSON [user_id]), hashtags TEXT (JSON [tag]), pinned INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0, created_at)` + index (group_id, id); `chat_reads (user_id, group_id, last_read_id INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, group_id))` — one read pointer per room (see *Multi-group leadership*).
 Parsing (server, on POST): mentions = `@username` tokens that match active users of the group (also `@all` → everyone in the group except the author); hashtags = `#` + `[\p{L}\p{N}_]+` (Arabic + Latin), lower-cased, de-duplicated. Body trimmed, ≤ 2000 chars; body or image required.
 API (all under /api/chat; scope = caller's group, super `?group_id`):
 - `GET /chat/stream?token=<jwt>` — SSE (EventSource can't send headers; JWT validated from the query). Registry of open connections per user. Heartbeat comment every 25s. Events: `message` (full message row), `deleted {id}`, `pinned {id, pinned}`, `presence {online: [user_id]}` (broadcast on connect/disconnect). Super connecting with `?group_id` joins that room.
@@ -257,6 +258,70 @@ API (all under /api/chat; scope = caller's group, super `?group_id`):
 - `PUT /chat/read {last_id}` → upserts chat_reads. `GET /stats` gains `chat_unread` (messages in the room with id > last_read_id, not by the caller).
 - Notification kind `mention` (label "إشارة إليك", icon AtSign, primary tint) added to notify.js KINDS and the dashboard KINDS map.
 UI — page `/chat` "المحادثة" (nav under العمل, all roles; unread badge from `chat_unread`): Metronic chat card filling the viewport height (`h-[calc(100dvh-65px-2rem)]`): header = group name + "متصل الآن N" with avatar stack + search input + active hashtag filter chip (clearable) + (super) group select; pinned bar (collapsible) under the header; message list grouped by day, own messages at the logical end in `bg-primary-light`, others at the start on white cards with initials tile + name + role light-badge; time; mentions rendered as primary chips, hashtags as clickable chips (→ filter); image thumbnail (max 320px, lazy, click → lightbox Dialog); deleted → muted "تم حذف الرسالة"; hover/long-press actions (copy, delete for own/admin, pin for admin); load older on scroll-top (`before` cursor); "رسائل جديدة ↓" jump button when scrolled up and a new message arrives; composer = auto-growing Textarea (Enter sends, Shift+Enter newline), `@` autocomplete popover (members, filtered, arrow keys + Enter), `#` autocomplete from top tags, image attach (preview + remove, uploads on send with busy state), send button. Desktop right rail: members (online dot), trending hashtags; on mobile the rail becomes a Dialog behind a "الأعضاء" button. SSE connection lives on the page only (closed on unmount); mark read on mount and on every incoming message while visible; dispatch `ymc:refresh`. `?m=<id>` deep link scrolls to and highlights that message.
+
+## Direct messages (محادثة خاصة) — 1:1 inside a group
+A private thread between **two members of the same group**, living beside the group room on the same `/chat` page.
+**A DM is private to its two participants — no admin, no group leader, no super has a read path.** This is the
+deliberate opposite of `entity_notes`, which grants the owner's leaders on purpose. Privacy is structural rather
+than a permission check: every statement binds `req.user.id` into the pair, so no request shape names a thread the
+caller is not in. Review rule (written on the code): no DM statement may reference `canManage` / `managedIds` /
+`groupAdmins` / `role`.
+
+```sql
+CREATE TABLE dm_messages (       -- keyed by the SORTED pair, so a conversation needs no id of its own
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  a_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  b_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,   -- author; always a_id or b_id
+  body TEXT, image_key TEXT,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (a_id < b_id));
+CREATE INDEX ix_dm_messages ON dm_messages(group_id, a_id, b_id, id);
+CREATE TABLE dm_reads (          -- one high-water mark per (reader, room, peer)
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  peer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_read_id INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, group_id, peer_id));
+```
+Both are new tables, so `CREATE TABLE IF NOT EXISTS` is the whole migration — nothing to rebuild.
+
+API (in `routes/chat.js`, reusing `room()` / `roomUsers()` / `format()`; the room is resolved by `scopeGid`, so a
+DM always belongs to the caller's **active workspace**):
+| Endpoint | Notes |
+|---|---|
+| `GET /chat/dm` | conversation list: every OTHER member of the room with `online`, `unread`, and `last` (`{id, mine, body, image, deleted, created_at}`); threads with history first (newest), then the rest by name. `[]` when the caller is not in the room. |
+| `GET /chat/dm/:peer/messages?before=&limit=` | `{items, next}`, same row shape as the room (`mentions: []`, `hashtags: []`, `pinned: 0`). |
+| `POST /chat/dm/:peer/messages` | `{body?, image_key?}`; body ≤ 2000; body or image required. Broadcasts SSE `dm {from, to, message}` to the two participants **on their connection to this room**; pushes to the peer (key `dm:{gid}:{senderId}`, link `/chat?dm=<senderId>`) when they are not watching it. |
+| `DELETE /chat/dm/messages/:id` | soft delete, **author only** — no leader override inside a private thread. 404 (not 403) for a thread the caller is not in, so ids cannot be probed. Broadcasts `dm_deleted`. |
+| `PUT /chat/dm/:peer/read` | `{last_id}` upserts `dm_reads`. |
+| `POST /chat/upload?dm=1` | uploads under `chat/{gid}/dm/…`. `POST /chat/messages` rejects a key with that prefix and the DM route requires it, so an image from a private thread cannot be re-posted to the room. |
+`GET /stats` gains `dm_unread` (unread across every private thread of the active room) **on both return sites**; the
+sidebar badge is `chat_unread + dm_unread`. No in-app notification rows are written for a DM — a stable key would be
+muted by `INSERT OR IGNORE` and a per-message key would flood the archive; marked `ponytail:` at the push call, with
+the consequence that a DM does not move the app-icon badge (which counts notification rows).
+
+Rules, decided on purpose: the peer must be in `roomUsers(gid)` **and so must the caller** — so a super, who belongs
+to no group's room, cannot start a DM (400/403), and a DM can never cross groups. Self-DM is 400. A member moved out
+of a group loses **every** path into threads in it — read, write and delete all re-check `roomUsers(gid)`, and `/stats`
+drops `dm_unread` to 0 — so a still-valid token cannot act on a group it has left. The rows stay, unreadable; group
+membership is the boundary, not history.
+Pinning, hashtags, `@all` and room search do not exist in a DM.
+
+UI (`pages/Chat.tsx`): the right rail becomes two tabs — **المحادثات** (the group room first, then every private
+thread with an unread pill, last-message preview and presence dot) and **الفريق** (the existing members list, now
+clickable to open a thread, plus trending tags). A message's ⋯ menu gains «رسالة خاصة». Inside a thread the header
+shows the peer with their role badge and presence, search / pinned bar / tag chips disappear, `Composer` takes
+`plain` (no `@`/`#` autocomplete — an empty `members` array would still have offered `@all`), and `Message` renders
+without pin or mention chips. Read marks are kept **per conversation** (`lastRead` is a map keyed by peer, 0 = the
+room) because message ids are globally increasing: a single monotonic ref would silently stop marking an older
+thread read. `?dm=<user id>` opens a thread (via `useDeepLink`, validated against the conversation list).
+ponytail: switching thread refetches rather than caching per-thread scrollback.
+`chat_messages` and `dm_messages` have independent AUTOINCREMENTs, so their ids collide: the room's `deleted` /
+`pinned` SSE frames are ignored while a private thread is open (and vice-versa), and an in-flight older page is
+dropped when the thread changes under it.
 
 ## Daily repeated tasks
 `tasks.repeat` TEXT ('daily'|NULL) + `repeat_from`/`repeat_until` TEXT (ISO date, both optional — NULL = forever; enums/dates enforced in routes; due_date forced NULL for repeat tasks). `interactions.day` TEXT NOT NULL DEFAULT '' — '' for one-off tasks, `YYYY-MM-DD` (server-local) for daily tasks; `ux_interaction` UNIQUE gains `day` (db.js migrates: add column, rebuild index). Every completion helper (`doneRows`/`taskDone`, progress, done_ids, stats, team pulse, nudge pending, manager report, export) is day-scoped through `doneRows`, so for a daily task "done" always means **done today** and it resets automatically at midnight — no row cloning, no cron.
@@ -319,3 +384,48 @@ explicitly (the SSE URL bypasses `api.ts`).
 ## Offline mutations (background sync)
 `push-sw.js` owns a single FIFO queue (IndexedDB `ymc-offline-queue`): its `fetch` listener intercepts `POST`/`PUT`/`DELETE` to `/api/*` (except `/api/login`); a write that fails by NETWORK error (not 4xx/5xx) is stored (url, method, headers, raw body) and the page still sees the failure (offline toast) — replay is a safety net, not optimistic UI. `flushQueue()` replays in order, stops at the first still-failing request, and runs on: the `ymc-flush` browser `sync` event (reconnect), ANY incoming push, or a `{type:'flush'}` message (posted by `Pwa.tsx` on `online`). Hand-rolled instead of workbox-background-sync because a failed workbox sync tag sits in Chrome's retry backoff and cannot be re-fired by a push. `Pwa.tsx` dispatches `ymc:refresh` on `online` so reads refresh after reconnect. Toaster: `position="bottom-left"` (physical) — keeps toasts off the fixed right sidebar in RTL.
 
+## Comments, tags, and exact-target notifications
+**Task discussion** — `POST /tasks/:id/comments` notifies two audiences (never the author, never twice):
+- `@الاسم` tags → kind `mention`, title "إشارة إليك في تعليق: {task}". Tokens are matched server-side against the group's people by DISPLAY NAME, longest-first (so "محمد علي" wins over "محمد") — the same rule `components/tasks/Comments.tsx` highlights with, so anything that looks tagged actually notifies. Names are resolved within the task's group only (an identically-named user in another group is never tagged).
+- everyone already involved → kind `comment`, title "تعليق جديد على مهمة: {task}": the group's leaders, the creator, anyone who commented, anyone with an interaction row, and anyone tagged earlier in the thread (a tag subscribes you to the replies). Members who never engaged are not pinged for every comment; a tag always reaches them. Inactive users are filtered out.
+- Both bodies are `{author}: {first 120 chars}`, both link to `/tasks?task={id}&c=1`.
+
+**Entity notes** (account / page / SIM) keep their audience (owner ⇄ the group's leaders) but are kind `comment` too, body `{author}: {preview}`, so the archive's "تعليق جديد" filter covers every comment in the system.
+
+**Every notification links to the exact thing**, never a bare list: `/tasks?task={id}` (`&c=1` opens the discussion) for task_new, task_done, task_due_soon, task_overdue, task_nudge, message, comment and mention; `/accounts?account={id}` for account_status/account_stale, `&tab=notes` for an account note, `/accounts?account={accId}&page={pageId}` for a page note; `/sims?sim={id}` for a SIM note; `/chat?m={id}` for a chat mention. `GET /stats` → `detail.attention[].link` uses the same deep links (the dashboard list already navigates).
+
+Frontend: `lib/deeplink.ts` → `useDeepLink(keys, ready, apply)` runs `apply(params)` once the page's data has loaded, then strips those params (`replace`) so a refresh or Back doesn't reopen the dialog — and so clicking a second notification for the same page re-fires. Wired into Tasks (`?task`, `?c`; falls back to loading the archived list and switching tabs when the task has since been archived), Accounts (`?account`, `?tab`, `?page` — the page's thread opens once the profile's pages load) and Sims (`?sim`). Chat keeps its own `?m=` handler (it pages backwards to reach the message). The kind→icon/label map lives ONLY in `components/Notifications.tsx` (exported with `FALLBACK_KIND` and `NotificationKind`); the archive page imports it, so a new kind can no longer render correctly in one place and wrong in the other.
+
+
+## Facebook sync (مزامنة فيسبوك) — Pages only, one env token
+
+`server/src/fb.js` reads the Graph API with a single env token: **`FB_TOKEN`** (Business Manager → System User; never expires). Unset → the module warns at boot and every sync route 400s in Arabic, exactly like `storage.js` without B2. Version pinned as `v26.0` (`FB_API_VERSION` overrides). Set **`TZ=Asia/Hebron`** on the host: "today" is bucketed with `toLocaleDateString('en-CA')`, the same convention as `notify.js day()`.
+
+**Only Facebook Pages sync.** A personal profile is unreadable by any token but its owner's, and even then Graph exposes neither a follower count nor a post count — `profile.php?id=` and `/people/<name>/<id>` links are recognised and **never attempted** (`هذا رابط حساب شخصي — فيسبوك لا يتيح قراءة بياناته؛ استخدم التحديث اليدوي`). Manual `تحديث سريع` stays the authoritative fallback. The Graph node is **parsed out of the stored `link`/`url`** (vanity alias or numeric id — Graph accepts both), so there is no `fb_object_id` column and no resolution pass; `fb.node()` is covered by `server/src/fb.check.js`.
+
+**Two calls per target:** `GET /{id}?fields=name,followers_count` and `GET /{id}/published_posts?fields=id,created_time,shares,reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0)&since&until&limit=100`, where `since = min(last_checked_at, now−7d)` floored at `now−90d` (the week of overlap is deliberate — shares keep accruing on posts already counted). `AbortSignal.timeout(8000)`, because Node 20 `fetch` has no default timeout. Graph answers HTTP 200 with an error object, so `body.error` is checked before `body.data`, and `shares` is **omitted entirely** when zero.
+
+**What a sync writes**, all through `quickUpdate()` — never a hand-rolled UPDATE, so `logDiff`, the `metrics`/`checked` events, `last_checked_at`, `prev_followers` and the sparkline are inherited:
+- `followers` — **overwritten** with the live value. Absent (never `0`) when Graph withheld it: a login-walled zero would collapse the followers chart.
+- `posts_count`, `shares`, `reactions`, `comments` — **accumulated**. Graph has no lifetime counter, so each sync adds `Σ max(0, now − then)` per post against the `sync_seen` baseline: a deleted post never subtracts, and a sliding window never walks the number backwards. Hand-entered totals are added onto, not replaced.
+- `posts_today` — recomputed every sync from `created_time` on the local day.
+- `status` — written **only** on Graph error 803, the one code that unambiguously means the object is gone; that flip fires the existing `account_status` notification. Every other code (190 expired, 492 missing role, 4/17/32 rate limit, and 100 — whose own message says *"does not exist **or** cannot be loaded due to missing permissions"*) describes **our token, not their account**, and must never rewrite status.
+- The live Page name is compared to the team's label and **reported, never auto-renamed** — logged once, when newly observed (it is a state, not an event; `sync_seen.n` remembers it).
+
+Nothing changed → `checked` «تمت مزامنة الحساب من فيسبوك — لا جديد», and `last_checked_at` is still stamped. **`quickUpdate` also clears `posts_today`**: that UPDATE always re-stamps `last_checked_at`, which is exactly what the UI gates the «اليوم N» badge on, so a manual «تحديث سريع» the next morning would otherwise relabel yesterday's count as today's. A successful sync rewrites it immediately after; a failed one rightly leaves it null. **`last_checked_at` IS the last-sync date; there is no `last_synced_at`** — a sync is a check performed by a robot, and `data.via='sync'` carries the provenance. A second timestamp would fork `isLate`, `STALE_DAYS`, the تحتاج متابعة chip and `/stats`.
+
+| Endpoint | Notes |
+|---|---|
+| `POST /accounts/:id/sync` | The account **and every syncable page under it** (serial). `200 {account, account_error, account_skipped, pages:[{id,name,ok,error}]}`. `account_skipped` marks "this row's own link is not a Page" (as opposed to a Graph failure) so the client can treat a profile-with-real-Pages as a success without string-matching Arabic. `account_error` rather than a 400 because a personal profile that owns real Pages is the common shape — syncing those pages anyway is the point. 400 only when the token is missing or nothing under the account parses. |
+| `POST /pages/:id/sync` | One page. `200 {page}` / `400 {error}`. For the case where you just fixed a page's URL. |
+| `GET /sync/health` | `{connected, name, error}` — one `GET /me`, module-cached 5 min. Drives the Accounts banner and every disabled sync control. |
+
+All three are `async` with their own `try/catch/next` — **Express 4 does not catch a rejected promise**. All are scope-guarded by `canAccess` **before** the token check, so a foreign id is 403 and never 400. Every `await` completes before any write: `better-sqlite3` is synchronous, and an `await` inside a transaction would commit early and drop the writes after it.
+
+**Bulk sync is a client-side serial loop over `POST /accounts/:id/sync`, not a server route** — progress, cancel, per-row error attribution and retry-the-failed come free with no server job state, and a 25-account bulk request would 504 (worse, `api.ts` sets `keepalive:true`, which is exactly the request a browser drops). `push-sw.js` **excludes `/sync` from the offline replay queue**: a sync is a read-through refresh, and replaying it hours later would stamp `last_checked_at` with a moment the numbers never came from.
+
+UI (Accounts page): a row checkbox **replaces** the decorative `#` column and covers visible + syncable rows only (no "select all across the dataset" escalation); an un-syncable row shows a focusable `Link2Off` repair button carrying the Arabic reason and opening تعديل — **never a disabled checkbox**, which Radix drops out of the tab order. Fifth chip «غير قابلة للمزامنة» turns scattered glyphs into a worklist. A bulk bar sticks to the bottom **of the card** (not the viewport — main content already carries the RTL sidebar offset) with three states: count → `<progress>` + إيقاف → a tinted result strip whose `<details>` groups failures **by reason**. Stopping is reported as its own outcome («تم الإيقاف · تمت مزامنة {ok} من {n} · لم تبدأ {stopped}», neutral toast) and the rows that never ran are cleared, never left sitting on «في الانتظار» (`انتهت صلاحية رمز فيسبوك ×17` reads as one problem) with إعادة محاولة الفاشلة. `آخر فحص` becomes `SyncCell` (في الانتظار / جاري المزامنة… / date / a truncated error badge whose `title` carries the full Arabic reason). Adding the sync button took the row to 7 icon buttons, which no longer fit the width the other columns leave — measured, the actions cell was clipped at −74px before a run and −237px after one — so the secondary actions (ملف الحساب، فتح الرابط، تعديل، حذف) moved behind a `⋯` DropdownMenu (the Tasks page pattern) and the per-row delete AlertDialog collapsed into one controlled dialog. Inline: مزامنة، تحديث سريع، الملاحظات الخاصة (count badge), `⋯`. One toast per run, never per row. One `aria-live` region that changes exactly twice. When `FB_TOKEN` is unset a banner says so and every sync control is disabled — **a doomed run cannot be started**.
+
+Checks: `node server/src/fb.check.js` (link parser, delta accumulator, today-bucketing, error map — transport stubbed) and `node server/sync.check.mjs` (end-to-end: boots the server in-process against a throwaway DB with Graph stubbed, covers the write path, the 803→مغلق flip, the once-only rename notice and the personal-profile short-circuit). `smoke.js` runs with **no** `FB_TOKEN` and asserts the degrade-honestly contract.
+
+ponytail: one env token for the whole server, serial loops, no retry/backoff, no scheduler, no Page Insights (Meta has deprecated those metric names three times since 2024), no notification on sync failure — the user is looking at the screen when they click. Per-account tokens, a bounded worker pool and a nightly job are the upgrade path.

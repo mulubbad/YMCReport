@@ -27,10 +27,12 @@ export function Composer({
   members,
   tags,
   onSend,
+  plain = false,
 }: {
   members: Member[]
   tags: Tag[]
   onSend: (body: string, file: File | null) => Promise<void>
+  plain?: boolean // private thread: no @mention / #tag autocomplete (an empty `members` would still offer @all)
 }) {
   const [text, setText] = useState("")
   const [file, setFile] = useState<File | null>(null)
@@ -52,7 +54,7 @@ export function Composer({
   useEffect(() => () => void (preview && URL.revokeObjectURL(preview)), [preview])
 
   const items = useMemo<Item[]>(() => {
-    if (!ac) return []
+    if (!ac || plain) return []
     const q = ac.query.toLowerCase()
     if (ac.type === "@") {
       const all: Item[] = [
@@ -65,7 +67,7 @@ export function Composer({
       .filter((t) => !q || t.tag.includes(q))
       .map((t) => ({ key: t.tag, label: `#${t.tag}`, sub: `${t.count}` }))
       .slice(0, 8)
-  }, [ac, members, tags])
+  }, [ac, members, tags, plain])
   useEffect(() => setActive(0), [ac?.type, ac?.query])
 
   const pick = (item: Item) => {
@@ -200,7 +202,7 @@ export function Composer({
           value={text}
           maxLength={MAX}
           disabled={busy}
-          placeholder="اكتب رسالة… (@ للإشارة، # للوسم)"
+          placeholder={plain ? "اكتب رسالة خاصة…" : "اكتب رسالة… (@ للإشارة، # للوسم)"}
           aria-label="رسالة جديدة"
           aria-autocomplete="list"
           aria-expanded={open}

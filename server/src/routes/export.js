@@ -17,8 +17,10 @@ const ACTION_AR = { react: 'إعجاب', comment: 'تعليق', share_profile: '
 const col = (header, width) => ({ header, width });
 const ts = (s) => (s ? String(s).slice(0, 16) : s); // 'YYYY-MM-DD HH:MM'
 const yesNo = (v) => (v ? 'نعم' : 'لا');
-const TRACK_COLS = [col('الحالة', 10), col('المتابعون', 11), col('عدد المنشورات', 12), col('آخر فحص', 20)];
-const track = (x) => [STATUS_AR[x.status] ?? x.status, x.followers, x.posts_count, ts(x.last_checked_at)];
+const TRACK_COLS = [col('الحالة', 10), col('المتابعون', 11), col('عدد المنشورات', 12), col('منشورات اليوم', 13),
+  col('المشاركات', 11), col('التفاعلات', 11), col('التعليقات', 11), col('آخر فحص', 20)];
+const track = (x) => [STATUS_AR[x.status] ?? x.status, x.followers, x.posts_count, x.posts_today,
+  x.shares, x.reactions, x.comments, ts(x.last_checked_at)];
 
 // WHERE builder over the shared filters q = {gid, userIds, typeIds, from, to}
 function frag(q) {
@@ -44,7 +46,8 @@ const SHEETS = {
       SELECT u.name owner, t.name type, s.name site, acc.name, acc.mobile, acc.email, acc.password, acc.link,
              acc.profile_address, acc.profile_work,
              (SELECT COUNT(*) FROM pages p WHERE p.account_id = acc.id) pages,
-             acc.status, acc.followers, acc.posts_count, acc.last_checked_at, acc.notes, acc.created_at
+             acc.status, acc.followers, acc.posts_count, acc.posts_today, acc.shares, acc.reactions,
+             acc.comments, acc.last_checked_at, acc.notes, acc.created_at
       FROM accounts acc JOIN users u ON u.id = acc.user_id JOIN account_types t ON t.id = acc.type_id
       LEFT JOIN sites s ON s.id = acc.site_id ${f.sql()} ORDER BY u.name, acc.name`).all(...f.args);
     return {
@@ -62,7 +65,8 @@ const SHEETS = {
     f.eq('u.group_id', q.gid); f.in('acc.user_id', q.userIds); f.in('acc.type_id', q.typeIds);
     const rows = db.prepare(`
       SELECT u.name owner, acc.name account, t.name type, p.name, p.url, p.address, p.work,
-             p.status, p.followers, p.posts_count, p.last_checked_at, p.note
+             p.status, p.followers, p.posts_count, p.posts_today, p.shares, p.reactions,
+             p.comments, p.last_checked_at, p.note
       FROM pages p JOIN accounts acc ON acc.id = p.account_id JOIN users u ON u.id = acc.user_id
       JOIN account_types t ON t.id = acc.type_id ${f.sql()} ORDER BY u.name, acc.name, p.name`).all(...f.args);
     return {

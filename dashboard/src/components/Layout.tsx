@@ -154,7 +154,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         .get("/stats")
         .then((s) => {
           setPending(s.my_pending ?? 0)
-          setChatUnread(s.chat_unread ?? 0)
+          setChatUnread((s.chat_unread ?? 0) + (s.dm_unread ?? 0)) // the room plus every private thread
         })
         .catch(() => {})
     void fetchStats()

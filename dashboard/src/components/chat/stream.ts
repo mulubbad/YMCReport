@@ -20,8 +20,12 @@ export type ChatMsg = {
 export type Member = { id: number; name: string; username: string; role: Role; online: boolean | number }
 export type Tag = { tag: string; count: number }
 
+export type DmEvent = { from: number; to: number; message: ChatMsg }
+
 type Handlers = {
   message: (m: ChatMsg) => void
+  dm: (d: DmEvent) => void
+  dm_deleted: (d: { id: number; from: number; to: number }) => void
   deleted: (d: { id: number }) => void
   pinned: (d: { id: number; pinned: number }) => void
   presence: (d: { online: number[] }) => void
@@ -50,7 +54,7 @@ export function useChatStream(groupId: number | undefined, handlers: Handlers, e
     let dropped = false
     const connect = () => {
       es = new EventSource(`${BASE}/api/chat/stream?${q}`)
-      for (const ev of ["message", "deleted", "pinned", "presence"] as const)
+      for (const ev of ["message", "dm", "dm_deleted", "deleted", "pinned", "presence"] as const)
         es.addEventListener(ev, (e) => (ref.current[ev] as (d: unknown) => void)(JSON.parse((e as MessageEvent).data)))
       es.onopen = () => {
         delay = 2000

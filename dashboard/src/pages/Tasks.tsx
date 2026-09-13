@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react"
 import { api } from "@/lib/api"
+import { useDeepLink } from "@/lib/deeplink"
 import { useAuth } from "@/lib/auth"
 import { useScope } from "@/lib/scope"
 import { TaskDailyDialog } from "@/components/TaskDailyDialog"
@@ -420,6 +421,26 @@ export default function Tasks() {
     window.addEventListener("ymc:refresh", onRefresh)
     return () => window.removeEventListener("ymc:refresh", onRefresh)
   }, [])
+
+  // notification deep link: open the exact task (its discussion when the notification was a comment/tag).
+  // A task that has since been archived isn't in the active list — pull the archived one and switch tabs.
+  useDeepLink(["task", "c"], tasks !== null, (p) => {
+    const id = Number(p.get("task"))
+    const open = (t: Task) => (p.get("c") ? setCommentsTask(t) : setDetail(t))
+    const here = (tasks ?? []).find((t) => t.id === id)
+    if (here) return open(here)
+    void api
+      .get("/tasks?archived=1")
+      .then((ts: Task[]) => {
+        const t = ts.find((x) => x.id === id)
+        if (!t) return toast.error("المهمة لم تعد متاحة")
+        setArchivedTasks(ts)
+        loadTeams(ts)
+        setTab("archived")
+        open(t)
+      })
+      .catch((e) => toast.error(e.message))
+  })
 
   const onTab = (v: string) => {
     setTab(v as "active" | "archived")

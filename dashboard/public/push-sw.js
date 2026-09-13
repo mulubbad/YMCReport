@@ -53,6 +53,9 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url)
   if (!['POST', 'PUT', 'DELETE'].includes(e.request.method)) return
   if (!url.pathname.startsWith('/api/') || url.pathname === '/api/login') return
+  // a sync is a read-through refresh, never a queued write — replaying it hours later would stamp
+  // last_checked_at with a moment the numbers never came from
+  if (url.pathname.endsWith('/sync')) return
   const queued = e.request.clone()
   e.respondWith((async () => {
     try { return await fetch(e.request) }

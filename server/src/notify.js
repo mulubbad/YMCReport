@@ -1,7 +1,7 @@
 const db = require('./db');
 const { push } = require('./push');
 
-const KINDS = new Set(['task_new', 'task_due_soon', 'task_overdue', 'task_done', 'account_stale', 'account_status', 'task_nudge', 'message', 'mention', 'profile_request', 'profile_reviewed']);
+const KINDS = new Set(['task_new', 'task_due_soon', 'task_overdue', 'task_done', 'account_stale', 'account_status', 'task_nudge', 'message', 'mention', 'comment', 'profile_request', 'profile_reviewed']);
 const ins = db.prepare('INSERT OR IGNORE INTO notifications (user_id, key, kind, title, body, link) VALUES (?,?,?,?,?,?)');
 // idempotent per (user, key) — UNIQUE(user_id, key) + INSERT OR IGNORE. kind enum lives here (no DB CHECK)
 const insert = db.transaction((userIds, { key, kind, title, body = null, link = null }) => {
@@ -49,9 +49,9 @@ function generateDerived(user) {
     for (const t of tasks) {
       if (taskDone(t.id, [user.id])) continue;
       if (t.due < today)
-        notify([user.id], { key: `task:${t.id}:overdue:${t.due}`, kind: 'task_overdue', title: `مهمة متأخرة: ${t.title}`, body: `كانت تستحق في ${t.due}`, link: '/tasks' });
+        notify([user.id], { key: `task:${t.id}:overdue:${t.due}`, kind: 'task_overdue', title: `مهمة متأخرة: ${t.title}`, body: `كانت تستحق في ${t.due}`, link: `/tasks?task=${t.id}` });
       else
-        notify([user.id], { key: `task:${t.id}:due_soon:${t.due}`, kind: 'task_due_soon', title: `مهمة تستحق قريبًا: ${t.title}`, body: `الاستحقاق ${t.due}`, link: '/tasks' });
+        notify([user.id], { key: `task:${t.id}:due_soon:${t.due}`, kind: 'task_due_soon', title: `مهمة تستحق قريبًا: ${t.title}`, body: `الاستحقاق ${t.due}`, link: `/tasks?task=${t.id}` });
     }
   }
   const week = isoWeek();
@@ -59,7 +59,7 @@ function generateDerived(user) {
     WHERE user_id = ? AND (last_checked_at IS NULL OR last_checked_at < datetime('now', ?))`).all(user.id, `-${STALE_DAYS} days`);
   for (const a of stale)
     notify([user.id], { key: `account:${a.id}:stale:${week}`, kind: 'account_stale', title: `حساب يحتاج فحصًا: ${a.name}`,
-      body: `آخر فحص: ${a.last_checked_at ? a.last_checked_at.slice(0, 10) : 'لم يُفحص بعد'}`, link: '/accounts' });
+      body: `آخر فحص: ${a.last_checked_at ? a.last_checked_at.slice(0, 10) : 'لم يُفحص بعد'}`, link: `/accounts?account=${a.id}` });
 }
 
 module.exports = { notify, groupAdmins, day, generateDerived };
