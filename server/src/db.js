@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS account_types (
   group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   allows_pages INTEGER NOT NULL DEFAULT 0,
+  update_days INTEGER NOT NULL DEFAULT 1,
   UNIQUE (group_id, name));
 CREATE TABLE IF NOT EXISTS sites (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -269,6 +270,10 @@ for (const table of ['accounts', 'pages']) {
     sync_seen: 'sync_seen TEXT',
   })) if (!cols.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
+
+// per-type update cadence (0 = never due, N = due every N days); existing types land on 1 = today's daily rule
+if (!db.prepare('PRAGMA table_info(account_types)').all().some((c) => c.name === 'update_days'))
+  db.exec('ALTER TABLE account_types ADD COLUMN update_days INTEGER NOT NULL DEFAULT 1');
 
 // older DBs carry a CHECK enum on notifications.kind; SQLite can't drop it → rebuild the table once
 // (rows copied, UNIQUE(user_id, key) + index recreated). No-op once the stored DDL has no CHECK.

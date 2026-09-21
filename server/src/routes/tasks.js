@@ -3,7 +3,7 @@ const db = require('../db');
 const { auth, requireRole, scopeGid, canManage, FORBIDDEN } = require('../auth');
 const { notify, groupAdmins, day } = require('../notify');
 const { enabled: pushEnabled } = require('../push');
-const { STATUS_AR, DUE_TODAY_SQL } = require('./accounts'); // DUE_TODAY_SQL binds one arg: the local day
+const { STATUS_AR, DUE_SQL, TRACKED_SQL } = require('./accounts'); // DUE_SQL binds one arg: the local day; both need `account_types t` joined
 
 const r = express.Router();
 r.use(auth);
@@ -340,7 +340,11 @@ r.get('/tasks/team', (req, res) => {
     .map((u) => ({ id: u.id, name: u.name,
       total: withStats ? tasks.length : 0,
       done: withStats ? tasks.filter((t) => taskDone(t.id, [u.id])).length : 0 }));
-  res.json({ group, tasks: tasks.length, members, admins: people.filter((u) => u.role === 'admin').map(({ id, name }) => ({ id, name })) });
+  // leaders come from admin_groups, not from users.group_id: a leader's DEFAULT group may be another
+  // one (multi-group leadership), and a super who also leads this team belongs in the list too.
+  const admins = db.prepare(`SELECT DISTINCT u.id, u.name FROM users u JOIN admin_groups ag ON ag.user_id = u.id
+    WHERE ag.group_id = ? AND u.role != 'user' AND u.active = 1 ORDER BY u.name`).all(gid);
+  res.json({ group, tasks: tasks.length, members, admins });
 });
 
 const senderName = (id) => db.prepare('SELECT name FROM users WHERE id = ?').get(id)?.name ?? 'المشرف';
@@ -552,9 +556,15 @@ function dashboardDetail(me, { from, to }, groupId) {
 
   // ---- daily update compliance (account_daily) ----
   // today per owner; summing these rows gives the scope totals, so no extra COUNT query.
-  // rows are already active-only, so `NOT DUE_TODAY_SQL` is exactly "has a row today".
-  const dayAcc = db.prepare(`SELECT a.user_id, COUNT(*) accounts, SUM(CASE WHEN ${DUE_TODAY_SQL} THEN 0 ELSE 1 END) updated
-    FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${gin} AND a.status = 'active' GROUP BY a.user_id`).all(today, ...gids);
+  // rows are already the TRACKED population, so `NOT DUE_SQL` is exactly "inside its type's window".
+  // u.name/u.group_id travel with the row because an OWNER is not always a member: POST /accounts
+  // defaults the owner to the caller, so a leader who adds an account for themselves owns it. Those
+  // accounts are in the denominator, so their owner has to be in the member list too — otherwise the
+  // headline ratio can never equal the sum of the table under it.
+  const dayAcc = db.prepare(`SELECT a.user_id, u.name, u.group_id, COUNT(*) accounts,
+      SUM(CASE WHEN ${DUE_SQL} THEN 0 ELSE 1 END) updated
+    FROM accounts a JOIN users u ON u.id = a.user_id JOIN account_types t ON t.id = a.type_id
+    WHERE ${gin} AND ${TRACKED_SQL} GROUP BY a.user_id`).all(today, ...gids);
   // account-level rows only (a page is not a unit of compliance); credited to the row's user_id
   const dayCols = `SUM(d.d_followers) followers, SUM(d.d_posts) posts, SUM(d.d_friend_requests) friend_requests,
     SUM(d.d_groups_joined) groups_joined, SUM(d.d_group_shares) group_shares`;
@@ -574,6 +584,11 @@ function dashboardDetail(me, { from, to }, groupId) {
   }
   const dayScope = dayAcc.reduce((s, x) => ({ accounts: s.accounts + x.accounts, updated: s.updated + x.updated }), { accounts: 0, updated: 0 });
   const dayOwn = new Map(dayAcc.map((x) => [x.user_id, x]));
+  // members (so someone with zero accounts still shows 0/0) plus any other owner counted above
+  const dayPeople = new Map(people.map((m) => [m.id, m]));
+  for (const x of dayAcc)
+    if (!dayPeople.has(x.user_id))
+      dayPeople.set(x.user_id, { id: x.user_id, name: x.name, group_name: groups.find((g) => g.id === x.group_id)?.name ?? null });
 
   const attention = [
     ...overdueTasks.map((t) => ({ type: 'task', id: t.id, title: t.title, detail: `متأخرة منذ ${t.days} يوم`, severity: 'danger', link: `/tasks?task=${t.id}` })),
@@ -605,8 +620,9 @@ function dashboardDetail(me, { from, to }, groupId) {
       due: dayScope.accounts - dayScope.updated, rate: pct(dayScope.updated, dayScope.accounts),
       totals: dayTotals,
       series: [...dayByDate.values()],
-      // every active member in scope (not a top-20 slice — this is the compliance list)
-      members: people.map((m) => {
+      // every member in scope plus every other account owner (not a top-20 slice — this is the
+      // compliance list, and its rows must add up to `accounts`/`updated` above)
+      members: [...dayPeople.values()].map((m) => {
         const t = dayOwn.get(m.id), s = dayMem.get(m.id) ?? zeroSums;
         const accounts = t?.accounts ?? 0, updated = t?.updated ?? 0;
         return { id: m.id, name: m.name, group_name: m.group_name, accounts, updated,
@@ -678,13 +694,14 @@ r.get('/stats', (req, res) => {
   const accounts_attention = db.prepare(
     `SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${accWhere} AND ${ATTENTION_SQL}`)
     .get(...accArgs, STALE_ARG).c;
-  // every ACTIVE account owes one update per local day; daily_due = those still missing today's row
+  // the cadence comes from the account TYPE: daily_total is the tracked population (a type set to
+  // never is out of both numbers), daily_due those past their window.
   const daily_total = db.prepare(
-    `SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${accWhere} AND a.status = 'active'`)
-    .get(...accArgs).c;
+    `SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id JOIN account_types t ON t.id = a.type_id
+     WHERE ${accWhere} AND ${TRACKED_SQL}`).get(...accArgs).c;
   const daily_due = db.prepare(
-    `SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${accWhere} AND ${DUE_TODAY_SQL}`)
-    .get(...accArgs, day()).c;
+    `SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id JOIN account_types t ON t.id = a.type_id
+     WHERE ${accWhere} AND ${DUE_SQL}`).get(...accArgs, day()).c;
   const users = onlyUser ? 1
     : db.prepare(`SELECT COUNT(*) c FROM users WHERE role = 'user' AND active = 1 ${gid ? 'AND group_id = ?' : ''}`)
       .get(...(gid ? [gid] : [])).c;

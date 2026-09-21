@@ -4,6 +4,8 @@ const db = require('../db');
 const { auth, requireRole, scopeGid } = require('../auth');
 const { members, taskDone } = require('./tasks');
 const { STATUS_AR, EVENT_AR } = require('./accounts');
+const { UPDATE_DAYS_AR } = require('./meta');
+const { day } = require('../notify');
 const { STATUS_AR: SIM_STATUS_AR, CARRIER_AR, linkedCounts } = require('./sims');
 
 const r = express.Router();
@@ -24,9 +26,11 @@ const TRACK_COLS = [col('الحالة', 10), col('المتابعون', 11), col(
 const track = (x) => [STATUS_AR[x.status] ?? x.status, x.followers, x.posts_count, x.posts_today,
   x.shares, x.reactions, x.comments, x.friend_requests, x.groups_joined, x.group_shares, ts(x.last_checked_at)];
 
-// active accounts per user (snapshot, not range-bound) — the daily-compliance denominator
-const activeAccounts = () => new Map(db.prepare("SELECT user_id, COUNT(*) c FROM accounts WHERE status = 'active' GROUP BY user_id")
-  .all().map((x) => [x.user_id, x.c]));
+// tracked accounts per user (snapshot, not range-bound) — the compliance population: a type with
+// update_days = 0 opted out of periodic updates and is never counted as missed
+const trackedAccounts = () => new Map(db.prepare(`SELECT a.user_id, COUNT(*) c FROM accounts a
+  JOIN account_types t ON t.id = a.type_id WHERE a.status = 'active' AND t.update_days > 0
+  GROUP BY a.user_id`).all().map((x) => [x.user_id, x.c]));
 
 // WHERE builder over the shared filters q = {gid, userIds, typeIds, from, to}
 function frag(q) {
@@ -49,7 +53,7 @@ const SHEETS = {
     const f = frag(q);
     f.eq('u.group_id', q.gid); f.in('acc.user_id', q.userIds); f.in('acc.type_id', q.typeIds);
     const rows = db.prepare(`
-      SELECT u.name owner, t.name type, s.name site, acc.name, acc.mobile, acc.email, acc.password, acc.link,
+      SELECT u.name owner, t.name type, t.update_days, s.name site, acc.name, acc.mobile, acc.email, acc.password, acc.link,
              acc.profile_address, acc.profile_work,
              (SELECT COUNT(*) FROM pages p WHERE p.account_id = acc.id) pages,
              acc.status, acc.followers, acc.posts_count, acc.posts_today, acc.shares, acc.reactions,
@@ -59,10 +63,14 @@ const SHEETS = {
       LEFT JOIN sites s ON s.id = acc.site_id ${f.sql()} ORDER BY u.name, acc.name`).all(...f.args);
     return {
       title: 'الحسابات',
-      columns: [col('المالك', 20), col('النوع', 14), col('الموقع', 16), col('اسم الحساب', 24), col('رقم الجوال', 16),
-        col('البريد الإلكتروني', 26), col('كلمة المرور', 16), col('الرابط', 30), col('المنطقة الجغرافية للحساب', 22),
-        col('طبيعة عمل صاحب الحساب', 22), col('الصفحات', 8), ...TRACK_COLS, col('ملاحظات', 30), col('تاريخ الإنشاء', 20)],
-      rows: rows.map((x) => [x.owner, x.type, x.site, x.name, x.mobile, x.email, x.password, x.link, x.profile_address,
+      // ponytail: دورية التحديث lives in this sheet's own column list, never in TRACK_COLS — those
+      // stay positionally paired with track() across the accounts AND pages sheets
+      columns: [col('المالك', 20), col('النوع', 14), col('دورية التحديث', 14), col('الموقع', 16), col('اسم الحساب', 24),
+        col('رقم الجوال', 16), col('البريد الإلكتروني', 26), col('كلمة المرور', 16), col('الرابط', 30),
+        col('المنطقة الجغرافية للحساب', 22), col('طبيعة عمل صاحب الحساب', 22), col('الصفحات', 8),
+        ...TRACK_COLS, col('ملاحظات', 30), col('تاريخ الإنشاء', 20)],
+      rows: rows.map((x) => [x.owner, x.type, UPDATE_DAYS_AR[x.update_days] ?? `كل ${x.update_days} يوم`,
+        x.site, x.name, x.mobile, x.email, x.password, x.link, x.profile_address,
         x.profile_work, x.pages, ...track(x), x.notes, ts(x.created_at)]),
     };
   },
@@ -162,18 +170,16 @@ const SHEETS = {
              SUM(d.d_groups_joined) groups_joined, SUM(d.d_group_shares) group_shares
       FROM account_daily d JOIN users u ON u.id = d.user_id ${f.sql()}
       GROUP BY d.day, u.id ORDER BY d.day DESC, u.name`).all(...f.args);
-    const active = activeAccounts();
+    const tracked = trackedAccounts();
+    // activity, not compliance: once types carry different windows a per-day ratio is meaningless —
+    // a weekly account untouched today is not behind. The cadence-aware rate lives on الملخص.
     return {
       title: 'التقدم اليومي',
-      columns: [col('التاريخ', 14), col('المستخدم', 22), col('الحسابات', 10), col('محدّثة', 10), col('متبقية', 10),
-        col('نسبة الالتزام %', 14), col('متابعون جدد', 12), col('منشورات جديدة', 12), col('طلبات صداقة', 12),
+      columns: [col('التاريخ', 14), col('المستخدم', 22), col('حسابات متتبَّعة', 14), col('حُدِّثت في هذا اليوم', 18),
+        col('متابعون جدد', 12), col('منشورات جديدة', 12), col('طلبات صداقة', 12),
         col('مجموعات جديدة', 14), col('مشاركات في المجموعات', 18)],
-      rows: rows.map((x) => {
-        const total = active.get(x.uid) || 0;
-        return [x.day, x.user, total, x.updated, Math.max(0, total - x.updated),
-          total ? Math.min(100, Math.round((x.updated * 100) / total)) : 0,
-          x.followers, x.posts, x.friend_requests, x.groups_joined, x.group_shares];
-      }),
+      rows: rows.map((x) => [x.day, x.user, tracked.get(x.uid) || 0, x.updated,
+        x.followers, x.posts, x.friend_requests, x.groups_joined, x.group_shares]),
     };
   },
 
@@ -202,23 +208,32 @@ const SHEETS = {
     const dailyByUser = new Map(db.prepare(`SELECT d.user_id uid, COUNT(*) acc_days, SUM(d.d_followers) followers,
       SUM(d.d_posts) posts, SUM(d.d_friend_requests) friend_requests, SUM(d.d_group_shares) group_shares
       ${dailyJoin} GROUP BY d.user_id`).all(...df.args).map((x) => [x.uid, x]));
-    const activeAcc = activeAccounts();
-    // compliance denominator = accounts × calendar days in the range; an open range falls back to the days that have data
-    const spanDays = q.from && q.to
-      ? Math.max(1, Math.round((Date.parse(q.to) - Date.parse(q.from)) / 86400000) + 1)
+    // the compliance span in calendar days; an open range falls back to the days that have data.
+    // `to` is clamped to today: a normal month export (from the 1st to the 30th, run on the 21st)
+    // must not count the nine days that have not happened yet as missed.
+    const end = q.to && q.to > day() ? day() : q.to;
+    const spanDays = q.from && end
+      ? Math.max(1, Math.round((Date.parse(end) - Date.parse(q.from)) / 86400000) + 1)
       : db.prepare(`SELECT COUNT(DISTINCT d.day) n ${dailyJoin}`).get(...df.args).n;
+    // checks owed = Σ over the member's tracked accounts of ceil(span / that type's cadence), not one
+    // multiply: a weekly type owes one check per week over the same span, and update_days = 0 owes none
+    const owedByUser = new Map();
+    for (const x of db.prepare(`SELECT a.user_id, t.update_days, COUNT(*) c FROM accounts a
+      JOIN account_types t ON t.id = a.type_id WHERE a.status = 'active' AND t.update_days > 0
+      GROUP BY a.user_id, t.update_days`).all())
+      owedByUser.set(x.user_id, (owedByUser.get(x.user_id) || 0) + x.c * Math.ceil(spanDays / x.update_days));
     return {
       title: 'الملخص',
       columns: [col('الاسم', 22), col('الحسابات', 10), ...types.map((t) => col(t.name, 12)),
         col('المهام المنجزة/الإجمالي', 16), col('نسبة الإنجاز %', 14),
-        col('الالتزام اليومي %', 16), col('متابعون جدد', 12), col('منشورات جديدة', 12), col('طلبات صداقة', 12),
+        col('الالتزام %', 16), col('متابعون جدد', 12), col('منشورات جديدة', 12), col('طلبات صداقة', 12),
         col('مشاركات في المجموعات', 18)],
       rows: scopedUsers.map((u) => {
         const counts = new Map(db.prepare('SELECT type_id, COUNT(*) c FROM accounts WHERE user_id = ? GROUP BY type_id').all(u.id)
           .map((x) => [x.type_id, x.c]));
         const tasks = u.group_id ? tasksFor(u.group_id) : [];
         const done = tasks.reduce((n, t) => n + taskDone(t.id, [u.id]), 0);
-        const dd = dailyByUser.get(u.id), owed = (activeAcc.get(u.id) || 0) * spanDays;
+        const dd = dailyByUser.get(u.id), owed = owedByUser.get(u.id) || 0;
         return [u.name, types.reduce((n, t) => n + (counts.get(t.id) || 0), 0), ...types.map((t) => counts.get(t.id) || 0),
           `${done}/${tasks.length}`, tasks.length ? Math.round((done * 100) / tasks.length) : 0,
           dd && owed ? Math.min(100, Math.round((dd.acc_days * 100) / owed)) : 0,

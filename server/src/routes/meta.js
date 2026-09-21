@@ -4,9 +4,18 @@ const { auth, requireRole, scopeGid, canManage, FORBIDDEN } = require('../auth')
 
 const r = express.Router();
 
+// update cadence presets shown in the UI; the server accepts any integer 0..365 (0 = never due)
+const UPDATE_DAYS_AR = { 0: 'بدون تحديث دوري', 1: 'يومياً', 2: 'كل يومين', 3: 'كل 3 أيام', 7: 'أسبوعياً', 14: 'كل أسبوعين', 30: 'شهرياً' };
+
 // types and sites are the same CRUD shape, different columns
-for (const { table, route, values } of [
-  { table: 'account_types', route: 'types', values: (b) => ({ name: b.name, allows_pages: b.allows_pages ? 1 : 0 }) },
+for (const { table, route, values, check } of [
+  { table: 'account_types',
+    route: 'types',
+    values: (b) => ({ name: b.name, allows_pages: b.allows_pages ? 1 : 0, update_days: Number(b.update_days ?? 1) }),
+    // Number('abc'/{}) is NaN and Number.isInteger rejects it, so a junk body 400s instead of storing NULL-ish
+    check: (v) => (Number.isInteger(v.update_days) && v.update_days >= 0 && v.update_days <= 365
+      ? null
+      : 'دورية التحديث يجب أن تكون عددًا صحيحًا بين 0 و365 يومًا') },
   { table: 'sites', route: 'sites', values: (b) => ({ name: b.name, url: b.url ?? null }) },
 ]) {
   r.get(`/${route}`, auth, (req, res) => {
@@ -26,6 +35,8 @@ for (const { table, route, values } of [
     if (!gid) return res.status(400).json({ error: 'يجب تحديد المجموعة' });
     if (!b.name) return res.status(400).json({ error: 'الاسم مطلوب' });
     const v = values(b);
+    const bad = check?.(v);
+    if (bad) return res.status(400).json({ error: bad });
     const keys = Object.keys(v);
     const info = db.prepare(`INSERT INTO ${table} (group_id, ${keys.join(', ')}) VALUES (?, ${keys.map(() => '?').join(', ')})`)
       .run(gid, ...keys.map((k) => v[k]));
@@ -46,6 +57,8 @@ for (const { table, route, values } of [
     const row = scoped(req, res);
     if (!row) return;
     const v = values({ ...row, ...req.body });
+    const bad = check?.(v);
+    if (bad) return res.status(400).json({ error: bad });
     const keys = Object.keys(v);
     db.prepare(`UPDATE ${table} SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`)
       .run(...keys.map((k) => v[k]), row.id);
@@ -61,3 +74,4 @@ for (const { table, route, values } of [
 }
 
 module.exports = r;
+module.exports.UPDATE_DAYS_AR = UPDATE_DAYS_AR;

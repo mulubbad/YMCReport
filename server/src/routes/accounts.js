@@ -34,7 +34,7 @@ const PAGE_FIELDS = ['name', 'url', 'address', 'work', 'note', ...TRACK];
 // last_daily_day: the last local day this account was rolled up — the UI compares it to today() to
 // flag «لم يُحدَّث اليوم» without a second call. Page rows never count (page_id IS NULL).
 const ACCOUNT_SQL = `
-  SELECT a.*, t.name AS type_name, t.allows_pages, s.name AS site_name, u.name AS owner_name,
+  SELECT a.*, t.name AS type_name, t.allows_pages, t.update_days, s.name AS site_name, u.name AS owner_name,
          u.group_id AS owner_group,
          (SELECT COUNT(*) FROM pages p WHERE p.account_id = a.id) AS page_count,
          (SELECT COUNT(*) FROM entity_notes n WHERE n.entity_type = 'account' AND n.entity_id = a.id) AS note_count,
@@ -117,12 +117,18 @@ const DAY_COLS = {
 };
 
 // One row per (account|page, local day). Deltas ACCUMULATE, so three updates in a day sum correctly.
-// A field whose `before` is null is a first reading — a baseline, never a day's gain (delta 0).
-function rollDaily({ account_id, page_id = null, user_id, before, after }) {
+// The baseline rule applies to `followers` ONLY: it is the one absolute, so a first-ever reading is a
+// starting point, not a day's gain. The other columns are counters the client sends as
+// (stored total ?? 0) + what was typed — a null stored total there means "nothing counted yet", so
+// the whole posted value IS the gain. Treating it as a baseline instead silently zeroes day one of
+// every counter, and friend_requests/groups_joined/group_shares are null on every pre-existing row.
+function rollDaily({ account_id, page_id = null, before, after }) {
   const d = day();
   const cur = db.prepare('SELECT * FROM account_daily WHERE account_id = ? AND COALESCE(page_id, 0) = ? AND day = ?')
     .get(account_id, page_id ?? 0, d);
-  const gain = (f) => (before[f] == null || after[f] == null ? 0 : after[f] - before[f]);
+  const gain = (f) => (after[f] == null ? 0
+    : f === 'followers' ? (before[f] == null ? 0 : after[f] - before[f])
+    : after[f] - (before[f] ?? 0));
   // owner is resolved fresh so a transferred account credits the member who actually did the work
   const owner = db.prepare('SELECT user_id FROM accounts WHERE id = ?').get(account_id)?.user_id ?? null;
   if (cur) {
@@ -139,6 +145,18 @@ function rollDaily({ account_id, page_id = null, user_id, before, after }) {
 // quick update {followers?, posts_count?, status?, note?}: returns Arabic error or null
 function quickUpdate({ table, row, account_id, page_id = null, page_name, user_id, body, via = null }) {
   const b = Object.fromEntries(Object.entries(body || {}).filter(([, v]) => v != null && v !== ''));
+  // `add_<metric>` = "this many are new since the last check", resolved against the row as it is NOW.
+  // The client must not compute the total itself: the wizard snapshots its targets when a chained run
+  // starts, so a Facebook sync or another leader landing mid-run would make it post a stale, LOWER
+  // total — walking the counter backwards and recording a negative day. An absolute value still wins
+  // when both are sent, which is how `followers` keeps working.
+  for (const f of METRICS) {
+    const inc = b[`add_${f}`];
+    delete b[`add_${f}`];
+    if (inc == null || b[f] != null) continue;
+    if (!Number.isInteger(inc) || inc < 0) return `${LABEL_AR[f]}: يجب أن تكون عددًا صحيحًا غير سالب`;
+    b[f] = (row[f] ?? 0) + inc;
+  }
   const err = trackError(b);
   if (err) return err;
   const after = merge(TRACK, row, b);
@@ -159,7 +177,7 @@ function quickUpdate({ table, row, account_id, page_id = null, page_name, user_i
       last_checked_at = datetime('now'), posts_today = NULL WHERE id = ?`)
     .run(...TRACK.map((f) => after[f]), row.id);
   // last, and unconditional: a no-change «checked» is exactly what marks the day done.
-  rollDaily({ account_id, page_id, user_id, before: row, after });
+  rollDaily({ account_id, page_id, before: row, after });
   return null;
 }
 
@@ -178,10 +196,16 @@ r.get('/accounts', (req, res) => {
   res.json(db.prepare(sql).all(...args));
 });
 
-// An ACTIVE account owes today's update until a daily row exists for it (page rows never count —
-// the account is the unit of compliance). Bind the local day from notify.day().
-const DUE_TODAY_SQL = `a.status = 'active' AND NOT EXISTS (
-  SELECT 1 FROM account_daily d WHERE d.account_id = a.id AND d.page_id IS NULL AND d.day = ?)`;
+// An account owes an update when its TYPE sets a cadence and no account-level daily row falls inside
+// that window. Requires `account_types t` joined on a.type_id; binds one arg, the local day.
+// julianday over the day text (not a string-built date modifier) because the window is per-row:
+// N=1 means "a row today", N=7 means "a row in the last 7 days including today".
+const DUE_SQL = `a.status = 'active' AND t.update_days > 0 AND NOT EXISTS (
+  SELECT 1 FROM account_daily d WHERE d.account_id = a.id AND d.page_id IS NULL
+    AND julianday(d.day) > julianday(?) - t.update_days)`;
+
+// the compliance POPULATION: an account whose type opted out is not "compliant", it is not counted.
+const TRACKED_SQL = `a.status = 'active' AND t.update_days > 0`;
 
 // the daily wizard queue. Same scope rules as GET /accounts, so a member sees only their own.
 r.get('/accounts/daily', (req, res) => {
@@ -198,13 +222,16 @@ r.get('/accounts/daily', (req, res) => {
   }
   const scope = where.length ? `AND ${where.join(' AND ')}` : '';
   // the wrapper keeps ORDER BY outside the subquery; binds run in SQL-text order, so the
-  // yesterday_followers day comes before DUE_TODAY_SQL's.
+  // yesterday_followers day comes before DUE_SQL's.
   const due = db.prepare(`SELECT q.*,
       (SELECT y.followers FROM account_daily y WHERE y.account_id = q.id AND y.page_id IS NULL AND y.day < ?
        ORDER BY y.day DESC LIMIT 1) AS yesterday_followers
-    FROM (${ACCOUNT_SQL} WHERE ${DUE_TODAY_SQL} ${scope}) q ORDER BY q.name`).all(d, d, ...args);
+    FROM (${ACCOUNT_SQL} WHERE ${DUE_SQL} ${scope}) q ORDER BY q.name`).all(d, d, ...args);
+  // the tracked population, not "every active account": a type at update_days = 0 opted out, so it
+  // must not sit in the denominator as permanently un-done. Needs the type join DUE_SQL gets free
+  // from ACCOUNT_SQL.
   const total = db.prepare(`SELECT COUNT(*) AS c FROM accounts a JOIN users u ON u.id = a.user_id
-    WHERE a.status = 'active' ${scope}`).get(...args).c;
+    JOIN account_types t ON t.id = a.type_id WHERE ${TRACKED_SQL} ${scope}`).get(...args).c;
   res.json({ day: d, due, done: total - due.length, total });
 });
 
@@ -445,4 +472,5 @@ r.post('/pages/:id/sync', async (req, res, next) => {
 module.exports = r;
 module.exports.STATUS_AR = STATUS_AR;
 module.exports.EVENT_AR = EVENT_AR;
-module.exports.DUE_TODAY_SQL = DUE_TODAY_SQL;
+module.exports.DUE_SQL = DUE_SQL;
+module.exports.TRACKED_SQL = TRACKED_SQL;

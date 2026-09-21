@@ -625,10 +625,7 @@ export default function Accounts() {
     if (page) setPendingPage(page)
   })
   // ?daily=1 — the «بانتظار تحديث اليوم» notification lands straight in the chained wizard
-  useDeepLink(["daily"], !loading, () => {
-    if (!due.length) return toast.success("كل الحسابات النشطة حُدِّثت اليوم")
-    setDaily({ kind: "account", targets: due })
-  })
+  useDeepLink(["daily"], !loading, () => void startDaily())
   useEffect(() => {
     if (!pendingPage || !pages) return
     const pg = pages.find((x) => x.id === pendingPage)
@@ -902,6 +899,20 @@ export default function Accounts() {
   // the ⚡ button is the same affordance as before, it just opens a one-target run of the wizard
   const openQuick = (kind: "account" | "page", row: DailyTarget) => setDaily({ kind, targets: [row] })
 
+  // A chained run takes its queue from GET /accounts/daily, never from the loaded list: that route is
+  // the only thing that carries `yesterday_followers`, which is what the wizard measures growth
+  // against. It is also the authority on what is still due, so a row updated in another tab since
+  // this list loaded drops out instead of being asked for twice.
+  const startDaily = async () => {
+    try {
+      const r = await api.get("/accounts/daily")
+      if (!r.due.length) return toast.success("كل الحسابات النشطة حُدِّثت اليوم")
+      setDaily({ kind: "account", targets: r.due })
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   // one page on its own — POST /pages/:id/sync. Toasts directly: it is a single deliberate click.
   const syncPage = async (p: Page) => {
     setSyncingPage(p.id)
@@ -1141,9 +1152,9 @@ export default function Accounts() {
                 <AlertTriangle className="size-4 shrink-0" />
                 {due.length} حساب بانتظار تحديث اليوم
               </p>
-              <p className="mt-1 text-xs text-destructive/80">التحديث اليومي مطلوب لكل حساب نشط — آخر موعد نهاية اليوم.</p>
+              <p className="mt-1 text-xs text-destructive">التحديث اليومي مطلوب لكل حساب نشط — آخر موعد نهاية اليوم.</p>
             </div>
-            <Button onClick={() => setDaily({ kind: "account", targets: due })}>
+            <Button onClick={() => void startDaily()}>
               <Zap />
               ابدأ التحديث اليومي
             </Button>
@@ -1157,7 +1168,7 @@ export default function Accounts() {
               <Info className="size-4" />
               لم يتم ربط فيسبوك بعد
             </p>
-            <p className="mt-1 text-xs text-primary/80">
+            <p className="mt-1 text-xs text-primary">
               {isAdmin
                 ? "اربط فيسبوك من إعدادات الخادم (FB_TOKEN) لتفعيل المزامنة التلقائية. التحديث اليدوي يعمل كالمعتاد."
                 : "المزامنة التلقائية غير مفعّلة — تواصل مع مدير النظام. التحديث اليدوي يعمل كالمعتاد."}

@@ -493,6 +493,10 @@ type StripCfg = {
   heightCls: string
   empty: string
   aria: (t: { created: number; completed: number }) => string
+  // label for a SUMMED value (the legend, and a weekly bucket's tooltip) when the sum is a different
+  // unit from one bar. A daily bar is "accounts updated that day"; adding thirty of them counts
+  // updates, not accounts, and would otherwise read «حسابات محدّثة 210» for a group of seven.
+  mainTotal?: string
 }
 const TEAM_STRIP: StripCfg = {
   main: "إنجازات",
@@ -503,6 +507,7 @@ const TEAM_STRIP: StripCfg = {
 }
 const DAILY_STRIP: StripCfg = {
   main: "حسابات محدّثة",
+  mainTotal: "تحديثاً",
   heightCls: "h-24 sm:h-28",
   empty: "لا توجد تحديثات يومية في هذه الفترة — وسّع النطاق الزمني.",
   aria: (t) => `الحسابات المحدّثة يوماً بيوم: ${t.completed} تحديثاً خلال الفترة. استخدم الأسهم للتنقل بين الأيام.`,
@@ -559,7 +564,7 @@ function Strip({ series, cfg = TEAM_STRIP }: { series: Series[]; cfg?: StripCfg 
           >
             <div className="font-semibold">{label(a)}</div>
             <div className="tabular-nums text-muted-foreground">
-              {`${cfg.main} ${a.completed}${cfg.faint ? ` · ${cfg.faint} ${a.created}` : ""}`}
+              {`${weekly ? (cfg.mainTotal ?? cfg.main) : cfg.main} ${a.completed}${cfg.faint ? ` · ${cfg.faint} ${a.created}` : ""}`}
             </div>
           </div>
         )}
@@ -596,7 +601,7 @@ function Strip({ series, cfg = TEAM_STRIP }: { series: Series[]; cfg?: StripCfg 
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-primary" aria-hidden />{cfg.main} <b className="tabular-nums text-foreground">{totals.completed}</b></span>
+        <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-primary" aria-hidden />{cfg.mainTotal ?? cfg.main} <b className="tabular-nums text-foreground">{totals.completed}</b></span>
         {cfg.faint && <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-primary/20" aria-hidden />{cfg.faint} <b className="tabular-nums text-foreground">{totals.created}</b></span>}
         {weekly && <span className="ms-auto">مجمّعة أسبوعياً</span>}
       </div>
@@ -628,7 +633,7 @@ function DailyCard({ daily, loading }: { daily?: Daily; loading: boolean }) {
               <div className="space-y-2 rounded-lg border border-dashed p-4">
                 <div className="flex flex-wrap items-baseline gap-x-2">
                   <span className="text-2xl font-bold leading-tight tabular-nums">{daily.updated}/{daily.accounts}</span>
-                  <span className="text-sm text-muted-foreground">حساب حُدِّث اليوم</span>
+                  <span className="text-sm text-muted-foreground">ضمن دوريتها</span>
                   <span className="ms-auto text-sm font-semibold tabular-nums">{pct(daily.rate)}</span>
                 </div>
                 <Bar value={daily.rate} cls={daily.due > 0 ? "bg-warning-fill" : "bg-success"} />
@@ -638,7 +643,7 @@ function DailyCard({ daily, loading }: { daily?: Daily; loading: boolean }) {
                     className="flex min-h-9 items-center gap-1.5 rounded-md text-sm font-semibold text-destructive outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50"
                   >
                     <TriangleAlert className="size-4 shrink-0" aria-hidden />
-                    <span className="tabular-nums">{daily.due} حساب بانتظار تحديث اليوم</span>
+                    <span className="tabular-nums">{daily.due} حساب بانتظار التحديث</span>
                     <ChevronLeft className="size-4 shrink-0" aria-hidden />
                   </Link>
                 ) : daily.accounts > 0 ? (

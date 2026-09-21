@@ -22,6 +22,8 @@ export type DailyTarget = {
   followers: number | null; posts_count: number | null; friend_requests: number | null
   groups_joined: number | null; group_shares: number | null
   yesterday_followers?: number | null; last_checked_at: string | null
+  // the TYPE's window; optional because the single ⚡ path passes a row that may not carry it
+  update_days?: number
 }
 
 type DeltaKey = "friend_requests" | "posts_count" | "group_shares" | "groups_joined"
@@ -133,7 +135,12 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
   const bodyRef = useRef<HTMLDivElement>(null)
   const savedAny = useRef(false)
 
-  const t = targets[idx] as DailyTarget | undefined
+  // `targets` empties in the same commit that closes the dialog, but Radix keeps the content mounted
+  // for its 200ms exit — rendering the empty state there flashes a false «لا حسابات بانتظار تحديث
+  // اليوم» on the way out. Hold the last real target for exactly that window.
+  const lastT = useRef<DailyTarget | undefined>(undefined)
+  const t = (targets[idx] ?? (open ? undefined : lastT.current)) as DailyTarget | undefined
+  if (targets[idx]) lastT.current = targets[idx]
   const multi = targets.length > 1
   const noun = kind === "page" ? "صفحة" : "حساب"
   const nounPl = kind === "page" ? "صفحات" : "حسابات"
@@ -176,7 +183,10 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
   }, [open, idx, step, done])
 
   const typedF = num(form.followers)
-  const yF = t?.yesterday_followers ?? null
+  // GET /accounts/daily supplies the previous daily snapshot. On the single ⚡ path there is none, and
+  // the stored total IS the last reading — so the growth readout works there too. It is labelled
+  // «آخر قراءة», not «أمس»: the previous snapshot may be several days old if a day was missed.
+  const yF = t?.yesterday_followers ?? t?.followers ?? null
   const gain = yF != null && ok(typedF) ? (typedF as number) - yF : null
   const runPct = Math.round(((idx * 3 + step) / Math.max(1, targets.length * 3)) * 100)
   const savedCount = log.filter((r) => !r.skipped).length
@@ -206,13 +216,16 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
     return Object.keys(next).length === 0
   }
 
-  // the body the server already understands: followers absolute, the other four as running totals
+  // followers goes up ABSOLUTE (it is what the platform shows); the four counters go up as `add_<k>`
+  // deltas so the SERVER adds them to the live row. Computing the total here instead would post a
+  // figure derived from `targets`, which was snapshotted when the run started — a sync landing
+  // mid-run would then walk the counter backwards and record a negative day.
   const payload = () => {
     const b: Record<string, unknown> = {}
     if (ok(typedF)) b.followers = typedF
     for (const k of ["posts_count", "friend_requests", "groups_joined", "group_shares"] as DeltaKey[]) {
       const v = num(form[k])
-      if (ok(v)) b[k] = (t?.[k] ?? 0) + (v as number)
+      if (ok(v)) b[`add_${k}`] = v
     }
     if (t && form.status !== t.status) b.status = form.status
     if (form.note.trim()) b.note = form.note.trim()
@@ -288,11 +301,14 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
   return (
     <>
       <Dialog open={open} onOpenChange={requestClose}>
-        <DialogContent className="sm:max-w-lg">
+        {/* onKeyDown sits here, not on the step body: that body is keyed per step, so moving to
+            المراجعة (which has no number box) unmounts the focused element and Radix returns focus to
+            this container — above any handler bound further in. */}
+        <DialogContent className="sm:max-w-lg" onKeyDown={onKeyDown}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {done ? <CalendarCheck className="size-5 text-success" /> : <Zap className="size-5 text-primary" />}
-              {done ? "اكتمل التحديث اليومي" : `التحديث اليومي — ${t?.name ?? ""}`}
+              {done ? "اكتمل التحديث" : `التحديث الدوري — ${t?.name ?? ""}`}
             </DialogTitle>
             <DialogDescription>
               {done ? "هذه خلاصة ما سُجِّل في هذه الجولة."
@@ -307,7 +323,7 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
                 <CalendarCheck className="size-6 shrink-0 text-success" />
                 <div className="min-w-0">
                   <p className="font-semibold">
-                    <span className="tabular-nums">{savedCount}</span> {noun} {wasUpdated} اليوم
+                    <span className="tabular-nums">{savedCount}</span> {noun} {wasUpdated}
                     {skipped > 0 && <> · <span className="tabular-nums">{skipped}</span> متخطّى</>}
                   </p>
                   <p className={cn("text-xs", DIM)}>سُجِّلت هذه القراءات ضمن تقرير التقدم اليومي.</p>
@@ -324,7 +340,7 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
               {skipped > 0 && (
                 <p role="alert" className="flex items-start gap-1.5 text-xs font-medium text-destructive">
                   <CircleAlert className="mt-0.5 size-3.5 shrink-0" />
-                  <span>بقي <span className="tabular-nums">{skipped}</span> {noun} بلا تحديث اليوم — أعد فتح «التحديث اليومي» قبل نهاية اليوم.</span>
+                  <span>بقي <span className="tabular-nums">{skipped}</span> {noun} بلا تحديث — أعد فتح «التحديث الدوري» لإكمالها.</span>
                 </p>
               )}
               <div className="flex justify-end"><Button className="h-11 min-w-32" onClick={finish}><Check />تم</Button></div>
@@ -332,8 +348,8 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
           ) : !t ? (
             <div className="flex flex-col items-center gap-2 rounded-md border border-dashed p-8 text-center">
               <CalendarCheck className="size-6 text-success" />
-              <p className="font-medium">لا {nounPl} بانتظار تحديث اليوم</p>
-              <p className={cn("text-xs", DIM)}>كل {nounPl} النشطة في نطاقك حُدِّثت اليوم.</p>
+              <p className="font-medium">لا {nounPl} بانتظار التحديث</p>
+              <p className={cn("text-xs", DIM)}>كل {nounPl} المتتبَّعة في نطاقك ضمن دوريتها.</p>
               <Button className="mt-2 h-11" onClick={finish}>تم</Button>
             </div>
           ) : (
@@ -380,7 +396,7 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
               </div>
 
               {/* ---------- the step itself ---------- */}
-              <div ref={bodyRef} onKeyDown={onKeyDown} key={`${t.id}-${step}`}
+              <div ref={bodyRef} key={`${t.id}-${step}`}
                 className="grid gap-4 duration-200 animate-in fade-in-0 slide-in-from-left-2 motion-reduce:animate-none">
                 {step === 0 && (
                   <>
@@ -392,10 +408,10 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
                     />
                     <p className={cn("flex flex-wrap items-center justify-center gap-2", DIM)} aria-live="polite">
                       {yF == null ? (
-                        <span>لا يوجد رقم أمس — سيُعتمد رقم اليوم نقطةَ بداية</span>
+                        <span>لا توجد قراءة سابقة — سيُعتمد رقم اليوم نقطةَ بداية</span>
                       ) : (
                         <>
-                          <span>أمس <span className="font-medium tabular-nums text-foreground">{fmt(yF)}</span></span>
+                          <span>آخر قراءة <span className="font-medium tabular-nums text-foreground">{fmt(yF)}</span></span>
                           <span aria-hidden="true">·</span>
                           <span>جديد اليوم</span>
                           <span className={cn("inline-flex items-center gap-1 rounded-badge px-1.5 py-0.5 font-semibold tabular-nums text-foreground",

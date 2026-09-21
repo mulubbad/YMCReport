@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react"
 import { ExternalLink, Globe, Pencil, Plus, Tags, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
+import { CADENCE, cadenceLabel } from "@/lib/cadence"
 import { ext } from "@/lib/utils"
 import { useAuth } from "@/lib/auth"
 import { useScope } from "@/lib/scope"
@@ -27,6 +28,13 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -39,7 +47,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
-type AccountType = { id: number; name: string; allows_pages: number }
+type AccountType = { id: number; name: string; allows_pages: number; update_days: number }
 type Site = { id: number; name: string; url: string | null }
 
 const thClass =
@@ -78,6 +86,7 @@ function TypesTab({ gid }: { gid: string }) {
   const [editing, setEditing] = useState<AccountType | null>(null)
   const [name, setName] = useState("")
   const [allowsPages, setAllowsPages] = useState(false)
+  const [updateDays, setUpdateDays] = useState(1)
   const [deleting, setDeleting] = useState<AccountType | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -92,6 +101,7 @@ function TypesTab({ gid }: { gid: string }) {
     setEditing(t)
     setName(t?.name ?? "")
     setAllowsPages(!!t?.allows_pages)
+    setUpdateDays(t?.update_days ?? 1)
     setOpen(true)
   }
 
@@ -99,7 +109,7 @@ function TypesTab({ gid }: { gid: string }) {
     e.preventDefault()
     setBusy(true)
     try {
-      const body = { name, allows_pages: allowsPages ? 1 : 0, ...(gid ? { group_id: Number(gid) } : {}) }
+      const body = { name, allows_pages: allowsPages ? 1 : 0, update_days: updateDays, ...(gid ? { group_id: Number(gid) } : {}) }
       if (editing) await api.put(`/types/${editing.id}`, body)
       else await api.post("/types", body)
       toast.success(editing ? "تم تحديث النوع" : "تم إنشاء النوع")
@@ -114,7 +124,9 @@ function TypesTab({ gid }: { gid: string }) {
 
   const togglePages = async (t: AccountType, checked: boolean) => {
     try {
-      await api.put(`/types/${t.id}`, { name: t.name, allows_pages: checked ? 1 : 0 })
+      // PUT /types replaces the whole row — omitting update_days would reset the cadence to the
+      // server default every time someone flips this switch
+      await api.put(`/types/${t.id}`, { name: t.name, allows_pages: checked ? 1 : 0, update_days: t.update_days })
       setRows((r) =>
         r ? r.map((x) => (x.id === t.id ? { ...x, allows_pages: checked ? 1 : 0 } : x)) : r,
       )
@@ -147,6 +159,13 @@ function TypesTab({ gid }: { gid: string }) {
     </div>
   )
 
+  // warning (never danger) on an opted-out type: nothing is wrong, someone chose it
+  const cadence = (t: AccountType) => (
+    <Badge variant={t.update_days === 0 ? "warning" : "secondary"} className="tabular-nums">
+      {cadenceLabel(t.update_days)}
+    </Badge>
+  )
+
   const actions = (t: AccountType) => (
     <div className="flex shrink-0 gap-1">
       <Button variant="ghost" size="icon-lg" aria-label={`تعديل ${t.name}`} onClick={() => openDialog(t)}>
@@ -174,6 +193,7 @@ function TypesTab({ gid }: { gid: string }) {
                   <TableHead className="w-10">#</TableHead>
                   <TableHead>الاسم</TableHead>
                   <TableHead>يسمح بالصفحات</TableHead>
+                  <TableHead>دورية التحديث</TableHead>
                   <TableHead className="w-28" />
                 </TableRow>
               </TableHeader>
@@ -183,6 +203,7 @@ function TypesTab({ gid }: { gid: string }) {
                     <TableCell className="text-xs text-muted-foreground tabular-nums">{i + 1}</TableCell>
                     <TableCell className="font-medium">{t.name}</TableCell>
                     <TableCell>{pages(t)}</TableCell>
+                    <TableCell>{cadence(t)}</TableCell>
                     <TableCell>
                       <div className="flex justify-end">{actions(t)}</div>
                     </TableCell>
@@ -196,9 +217,11 @@ function TypesTab({ gid }: { gid: string }) {
               <div key={t.id} className="flex items-center justify-between gap-2 p-4">
                 <div className="min-w-0 space-y-2">
                   <div className="truncate font-medium">{t.name}</div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                     يسمح بالصفحات
                     {pages(t)}
+                    <span className="ms-1">دورية التحديث</span>
+                    {cadence(t)}
                   </div>
                 </div>
                 {actions(t)}
@@ -223,6 +246,32 @@ function TypesTab({ gid }: { gid: string }) {
                 required
                 autoFocus
               />
+            </div>
+            <div className="space-y-2">
+              <Label id="t-days-label">دورية التحديث</Label>
+              <Select value={String(updateDays)} onValueChange={(v) => setUpdateDays(Number(v))}>
+                {/* a Radix trigger is a button, which label[for] cannot name — point aria-labelledby
+                    at the label AND the trigger so the name reads "دورية التحديث يومياً" */}
+                <SelectTrigger id="t-days" aria-labelledby="t-days-label t-days" className="min-h-11 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {/* a value set outside the presets (the API takes any 0..365) still has to show */}
+                  {!CADENCE.some((c) => c.value === updateDays) && (
+                    <SelectItem value={String(updateDays)} className="tabular-nums">
+                      {cadenceLabel(updateDays)}
+                    </SelectItem>
+                  )}
+                  {CADENCE.map((c) => (
+                    <SelectItem key={c.value} value={String(c.value)} className="tabular-nums">
+                      {c.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                كل كم يوم يجب تحديث حسابات هذا النوع. اختر «بدون» لإيقاف التذكير لهذا النوع.
+              </p>
             </div>
             <div className="flex items-center gap-2">
               <Switch id="t-pages" checked={allowsPages} onCheckedChange={setAllowsPages} />
