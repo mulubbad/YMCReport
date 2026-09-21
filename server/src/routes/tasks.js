@@ -3,7 +3,7 @@ const db = require('../db');
 const { auth, requireRole, scopeGid, canManage, FORBIDDEN } = require('../auth');
 const { notify, groupAdmins, day } = require('../notify');
 const { enabled: pushEnabled } = require('../push');
-const { STATUS_AR } = require('./accounts');
+const { STATUS_AR, DUE_TODAY_SQL } = require('./accounts'); // DUE_TODAY_SQL binds one arg: the local day
 
 const r = express.Router();
 r.use(auth);
@@ -550,6 +550,31 @@ function dashboardDetail(me, { from, to }, groupId) {
   for (const t of tasks) if (t.created) byDay.get(t.created_at.slice(0, 10)).created++;
   for (const p of pairs) if (p.completed) byDay.get(p.completed_at.slice(0, 10)).completed++;
 
+  // ---- daily update compliance (account_daily) ----
+  // today per owner; summing these rows gives the scope totals, so no extra COUNT query.
+  // rows are already active-only, so `NOT DUE_TODAY_SQL` is exactly "has a row today".
+  const dayAcc = db.prepare(`SELECT a.user_id, COUNT(*) accounts, SUM(CASE WHEN ${DUE_TODAY_SQL} THEN 0 ELSE 1 END) updated
+    FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${gin} AND a.status = 'active' GROUP BY a.user_id`).all(today, ...gids);
+  // account-level rows only (a page is not a unit of compliance); credited to the row's user_id
+  const dayCols = `SUM(d.d_followers) followers, SUM(d.d_posts) posts, SUM(d.d_friend_requests) friend_requests,
+    SUM(d.d_groups_joined) groups_joined, SUM(d.d_group_shares) group_shares`;
+  const dayFrom = `FROM account_daily d JOIN users u ON u.id = d.user_id
+    WHERE d.page_id IS NULL AND ${gin} AND d.day BETWEEN ? AND ?`;
+  const dayRows = db.prepare(`SELECT d.day, COUNT(DISTINCT d.account_id) updated, ${dayCols} ${dayFrom} GROUP BY d.day`).all(...gids, from, to);
+  const dayMem = new Map(db.prepare(`SELECT d.user_id, ${dayCols}, MAX(d.updated_at) last_update_at ${dayFrom} GROUP BY d.user_id`)
+    .all(...gids, from, to).map((x) => [x.user_id, x]));
+
+  const zeroSums = { followers: 0, posts: 0, friend_requests: 0, groups_joined: 0, group_shares: 0 };
+  const dayTotals = { ...zeroSums };
+  const dayByDate = new Map();
+  for (let d = from; d <= to; d = addDays(d, 1)) dayByDate.set(d, { date: d, updated: 0, ...zeroSums });
+  for (const { day: dkey, ...sums } of dayRows) {
+    if (dayByDate.has(dkey)) Object.assign(dayByDate.get(dkey), sums);
+    for (const k in zeroSums) dayTotals[k] += sums[k];
+  }
+  const dayScope = dayAcc.reduce((s, x) => ({ accounts: s.accounts + x.accounts, updated: s.updated + x.updated }), { accounts: 0, updated: 0 });
+  const dayOwn = new Map(dayAcc.map((x) => [x.user_id, x]));
+
   const attention = [
     ...overdueTasks.map((t) => ({ type: 'task', id: t.id, title: t.title, detail: `متأخرة منذ ${t.days} يوم`, severity: 'danger', link: `/tasks?task=${t.id}` })),
     ...db.prepare(`SELECT a.id, a.name, a.status, a.last_checked_at FROM accounts a JOIN users u ON u.id = a.user_id
@@ -575,6 +600,21 @@ function dashboardDetail(me, { from, to }, groupId) {
       health: h, health_label, health_tone,
     },
     series: [...byDay.values()],
+    daily: {
+      date: today, accounts: dayScope.accounts, updated: dayScope.updated,
+      due: dayScope.accounts - dayScope.updated, rate: pct(dayScope.updated, dayScope.accounts),
+      totals: dayTotals,
+      series: [...dayByDate.values()],
+      // every active member in scope (not a top-20 slice — this is the compliance list)
+      members: people.map((m) => {
+        const t = dayOwn.get(m.id), s = dayMem.get(m.id) ?? zeroSums;
+        const accounts = t?.accounts ?? 0, updated = t?.updated ?? 0;
+        return { id: m.id, name: m.name, group_name: m.group_name, accounts, updated,
+          due: accounts - updated, rate: pct(updated, accounts),
+          followers: s.followers, posts: s.posts, friend_requests: s.friend_requests,
+          groups_joined: s.groups_joined, group_shares: s.group_shares, last_update_at: s.last_update_at ?? null };
+      }).sort((a, b) => b.rate - a.rate || a.name.localeCompare(b.name, 'ar')),
+    },
     tasks_by_kind: KINDS.map((kind) => ({
       kind, total: tasks.filter((t) => t.created && t.kind === kind).length,
       completion: rates(pairs.filter((p) => p.kind === kind)).completion,
@@ -626,7 +666,7 @@ r.get('/stats', (req, res) => {
     .get(roomId, me.id, me.id, me.id, me.id, me.id).c : 0;
   // groupless admin has empty scope, not global
   if (me.role === 'admin' && !gid)
-    return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, accounts_by_type: [], chat_unread, dm_unread, detail, push_enabled: pushEnabled() });
+    return res.json({ users: 0, accounts: 0, pages: 0, tasks: 0, completion: 0, my_pending: 0, accounts_attention: 0, daily_due: 0, daily_total: 0, accounts_by_type: [], chat_unread, dm_unread, detail, push_enabled: pushEnabled() });
 
   const accWhere = onlyUser ? 'a.user_id = ?' : gid ? 'u.group_id = ?' : '1=1';
   const accArgs = onlyUser ? [onlyUser] : gid ? [gid] : [];
@@ -638,6 +678,13 @@ r.get('/stats', (req, res) => {
   const accounts_attention = db.prepare(
     `SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${accWhere} AND ${ATTENTION_SQL}`)
     .get(...accArgs, STALE_ARG).c;
+  // every ACTIVE account owes one update per local day; daily_due = those still missing today's row
+  const daily_total = db.prepare(
+    `SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${accWhere} AND a.status = 'active'`)
+    .get(...accArgs).c;
+  const daily_due = db.prepare(
+    `SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${accWhere} AND ${DUE_TODAY_SQL}`)
+    .get(...accArgs, day()).c;
   const users = onlyUser ? 1
     : db.prepare(`SELECT COUNT(*) c FROM users WHERE role = 'user' AND active = 1 ${gid ? 'AND group_id = ?' : ''}`)
       .get(...(gid ? [gid] : [])).c;
@@ -672,6 +719,8 @@ r.get('/stats', (req, res) => {
     completion: total ? Math.round((done * 100) / total) : 0,
     my_pending,
     accounts_attention,
+    daily_due,
+    daily_total,
     accounts_by_type,
     chat_unread,
     dm_unread,

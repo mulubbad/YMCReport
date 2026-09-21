@@ -1,21 +1,24 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { sign, auth, requireRole, scopeGid, canManage, managedIds, setManagedGroups, FORBIDDEN } = require('../auth');
+const { sign, auth, requireRole, scopeGid, canManage, managedIds, ledIds, setManagedGroups, FORBIDDEN } = require('../auth');
 
 const r = express.Router();
 const PUBLIC = 'id, username, name, role, group_id, active, last_seen_at, created_at';
 
-// an admin's row carries every group they lead (group_ids); everyone else just their own group
-const withGroups = (u) => (u && u.role === 'admin' ? { ...u, group_ids: managedIds(u) } : u);
+// a leader's row carries every group they lead (group_ids); a member just their own group.
+// ledIds, not managedIds: managedIds is null for a super (= every group), which is a different question.
+const withGroups = (u) => (u && u.role !== 'user' ? { ...u, group_ids: ledIds(u.id) } : u);
 const getUser = (id) => withGroups(db.prepare(`SELECT ${PUBLIC} FROM users WHERE id = ?`).get(id));
 
-// admin_groups follows the row: non-admins lead nothing; an admin always leads their default group,
-// plus whatever super passed in `group_ids`.
+// admin_groups follows the row: a member leads nothing; a LEADER — an admin, or a super who also
+// leads teams — always leads their default group, plus whatever super passed in `group_ids`.
+// `ledIds` is the fallback, not `managedIds`: the latter is null for a super, which would wipe the
+// set on any update that does not carry `group_ids`.
 function syncAdminGroups(user, body) {
-  if (user.role !== 'admin') return setManagedGroups(user.id, []);
+  if (user.role === 'user') return setManagedGroups(user.id, []);
   const asked = Array.isArray(body.group_ids) ? body.group_ids.map(Number).filter(Number.isInteger) : null;
-  const next = new Set(asked ?? managedIds(user));
+  const next = new Set(asked ?? ledIds(user.id));
   if (user.group_id) next.add(user.group_id);
   setManagedGroups(user.id, [...next]);
 }
@@ -124,7 +127,7 @@ r.put('/users/:id', auth, (req, res) => {
     else { sets.push(`${f} = ?`); args.push(b[f]); }
   }
   if (sets.length) db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...args, target.id);
-  // super may also re-assign which groups an admin leads
+  // super may also re-assign which groups a leader leads — including their own super account
   if (me.role === 'super') {
     const after = db.prepare('SELECT id, role, group_id FROM users WHERE id = ?').get(target.id);
     if (after.role !== target.role || after.group_id !== target.group_id || 'group_ids' in b) syncAdminGroups(after, b);

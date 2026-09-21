@@ -19,9 +19,11 @@ const LABEL_AR = {
   notes: 'ملاحظات', url: 'الرابط', address: 'العنوان', work: 'العمل', note: 'ملاحظات',
   status: 'الحالة', followers: 'المتابعون', posts_count: 'عدد المنشورات',
   shares: 'المشاركات', reactions: 'التفاعلات', comments: 'التعليقات', posts_today: 'منشورات اليوم',
+  friend_requests: 'طلبات الصداقة', groups_joined: 'المجموعات المنضم إليها', group_shares: 'المشاركات في المجموعات',
 };
 
-const TRACK = ['status', 'followers', 'posts_count', 'shares', 'reactions', 'comments'];
+const TRACK = ['status', 'followers', 'posts_count', 'friend_requests', 'groups_joined', 'group_shares',
+  'shares', 'reactions', 'comments'];
 // every TRACK field except status: the numbers a `metrics` event carries, in one place so adding a
 // column can never persist a value while logging no history (that bug is silent).
 const METRICS = TRACK.filter((f) => f !== 'status');
@@ -29,6 +31,8 @@ const FIELDS = ['type_id', 'site_id', 'name', 'mobile', 'email', 'password', 'li
 const PAGE_FIELDS = ['name', 'url', 'address', 'work', 'note', ...TRACK];
 
 // prev_followers: the metrics snapshot before the latest one (account-level events only)
+// last_daily_day: the last local day this account was rolled up — the UI compares it to today() to
+// flag «لم يُحدَّث اليوم» without a second call. Page rows never count (page_id IS NULL).
 const ACCOUNT_SQL = `
   SELECT a.*, t.name AS type_name, t.allows_pages, s.name AS site_name, u.name AS owner_name,
          u.group_id AS owner_group,
@@ -36,7 +40,9 @@ const ACCOUNT_SQL = `
          (SELECT COUNT(*) FROM entity_notes n WHERE n.entity_type = 'account' AND n.entity_id = a.id) AS note_count,
          (SELECT json_extract(e.data, '$.followers') FROM account_events e
           WHERE e.account_id = a.id AND e.kind = 'metrics' AND e.page_id IS NULL
-          ORDER BY e.id DESC LIMIT 1 OFFSET 1) AS prev_followers
+          ORDER BY e.id DESC LIMIT 1 OFFSET 1) AS prev_followers,
+         (SELECT d.day FROM account_daily d WHERE d.account_id = a.id AND d.page_id IS NULL
+          ORDER BY d.day DESC LIMIT 1) AS last_daily_day
   FROM accounts a
   JOIN users u ON u.id = a.user_id
   JOIN account_types t ON t.id = a.type_id
@@ -103,6 +109,33 @@ function logDiff({ account_id, page_id = null, page_name, user_id, before, after
   return n;
 }
 
+// TRACK metric -> account_daily delta column. followers is the only absolute: its delta is the gain.
+const DAY_COLS = {
+  followers: 'd_followers', posts_count: 'd_posts', friend_requests: 'd_friend_requests',
+  groups_joined: 'd_groups_joined', group_shares: 'd_group_shares',
+  shares: 'd_shares', reactions: 'd_reactions', comments: 'd_comments',
+};
+
+// One row per (account|page, local day). Deltas ACCUMULATE, so three updates in a day sum correctly.
+// A field whose `before` is null is a first reading — a baseline, never a day's gain (delta 0).
+function rollDaily({ account_id, page_id = null, user_id, before, after }) {
+  const d = day();
+  const cur = db.prepare('SELECT * FROM account_daily WHERE account_id = ? AND COALESCE(page_id, 0) = ? AND day = ?')
+    .get(account_id, page_id ?? 0, d);
+  const gain = (f) => (before[f] == null || after[f] == null ? 0 : after[f] - before[f]);
+  // owner is resolved fresh so a transferred account credits the member who actually did the work
+  const owner = db.prepare('SELECT user_id FROM accounts WHERE id = ?').get(account_id)?.user_id ?? null;
+  if (cur) {
+    db.prepare(`UPDATE account_daily SET followers = COALESCE(?, followers), checks = checks + 1,
+      ${Object.values(DAY_COLS).map((c) => `${c} = ${c} + ?`).join(', ')}, updated_at = datetime('now')
+      WHERE id = ?`).run(after.followers ?? null, ...Object.keys(DAY_COLS).map(gain), cur.id);
+  } else {
+    db.prepare(`INSERT INTO account_daily (account_id, page_id, user_id, day, followers, checks,
+      ${Object.values(DAY_COLS).join(', ')}) VALUES (?,?,?,?,?,1${',?'.repeat(Object.keys(DAY_COLS).length)})`)
+      .run(account_id, page_id, owner, d, after.followers ?? null, ...Object.keys(DAY_COLS).map(gain));
+  }
+}
+
 // quick update {followers?, posts_count?, status?, note?}: returns Arabic error or null
 function quickUpdate({ table, row, account_id, page_id = null, page_name, user_id, body, via = null }) {
   const b = Object.fromEntries(Object.entries(body || {}).filter(([, v]) => v != null && v !== ''));
@@ -125,6 +158,8 @@ function quickUpdate({ table, row, account_id, page_id = null, page_name, user_i
   db.prepare(`UPDATE ${table} SET ${TRACK.map((f) => `${f} = ?`).join(', ')},
       last_checked_at = datetime('now'), posts_today = NULL WHERE id = ?`)
     .run(...TRACK.map((f) => after[f]), row.id);
+  // last, and unconditional: a no-change «checked» is exactly what marks the day done.
+  rollDaily({ account_id, page_id, user_id, before: row, after });
   return null;
 }
 
@@ -141,6 +176,36 @@ r.get('/accounts', (req, res) => {
   }
   const sql = `${ACCOUNT_SQL} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY a.created_at DESC`;
   res.json(db.prepare(sql).all(...args));
+});
+
+// An ACTIVE account owes today's update until a daily row exists for it (page rows never count —
+// the account is the unit of compliance). Bind the local day from notify.day().
+const DUE_TODAY_SQL = `a.status = 'active' AND NOT EXISTS (
+  SELECT 1 FROM account_daily d WHERE d.account_id = a.id AND d.page_id IS NULL AND d.day = ?)`;
+
+// the daily wizard queue. Same scope rules as GET /accounts, so a member sees only their own.
+r.get('/accounts/daily', (req, res) => {
+  const me = req.user;
+  const d = day();
+  const where = [], args = [];
+  if (me.role === 'user') { where.push('a.user_id = ?'); args.push(me.id); }
+  else {
+    const gid = scopeGid(req, res);           // admin: the active group; super: ?group_id or all
+    if (gid === false) return;
+    if (me.role === 'admin' && !gid) return res.json({ day: d, due: [], done: 0, total: 0 });
+    if (gid) { where.push('u.group_id = ?'); args.push(gid); }
+    if (req.query.user_id) { where.push('a.user_id = ?'); args.push(req.query.user_id); }
+  }
+  const scope = where.length ? `AND ${where.join(' AND ')}` : '';
+  // the wrapper keeps ORDER BY outside the subquery; binds run in SQL-text order, so the
+  // yesterday_followers day comes before DUE_TODAY_SQL's.
+  const due = db.prepare(`SELECT q.*,
+      (SELECT y.followers FROM account_daily y WHERE y.account_id = q.id AND y.page_id IS NULL AND y.day < ?
+       ORDER BY y.day DESC LIMIT 1) AS yesterday_followers
+    FROM (${ACCOUNT_SQL} WHERE ${DUE_TODAY_SQL} ${scope}) q ORDER BY q.name`).all(d, d, ...args);
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM accounts a JOIN users u ON u.id = a.user_id
+    WHERE a.status = 'active' ${scope}`).get(...args).c;
+  res.json({ day: d, due, done: total - due.length, total });
 });
 
 r.post('/accounts', (req, res) => {
@@ -380,3 +445,4 @@ r.post('/pages/:id/sync', async (req, res, next) => {
 module.exports = r;
 module.exports.STATUS_AR = STATUS_AR;
 module.exports.EVENT_AR = EVENT_AR;
+module.exports.DUE_TODAY_SQL = DUE_TODAY_SQL;

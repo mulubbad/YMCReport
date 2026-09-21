@@ -18,9 +18,15 @@ const col = (header, width) => ({ header, width });
 const ts = (s) => (s ? String(s).slice(0, 16) : s); // 'YYYY-MM-DD HH:MM'
 const yesNo = (v) => (v ? 'نعم' : 'لا');
 const TRACK_COLS = [col('الحالة', 10), col('المتابعون', 11), col('عدد المنشورات', 12), col('منشورات اليوم', 13),
-  col('المشاركات', 11), col('التفاعلات', 11), col('التعليقات', 11), col('آخر فحص', 20)];
+  col('المشاركات', 11), col('التفاعلات', 11), col('التعليقات', 11),
+  col('طلبات الصداقة', 12), col('المجموعات المنضم إليها', 16), col('المشاركات في المجموعات', 16),
+  col('آخر فحص', 20)];
 const track = (x) => [STATUS_AR[x.status] ?? x.status, x.followers, x.posts_count, x.posts_today,
-  x.shares, x.reactions, x.comments, ts(x.last_checked_at)];
+  x.shares, x.reactions, x.comments, x.friend_requests, x.groups_joined, x.group_shares, ts(x.last_checked_at)];
+
+// active accounts per user (snapshot, not range-bound) — the daily-compliance denominator
+const activeAccounts = () => new Map(db.prepare("SELECT user_id, COUNT(*) c FROM accounts WHERE status = 'active' GROUP BY user_id")
+  .all().map((x) => [x.user_id, x.c]));
 
 // WHERE builder over the shared filters q = {gid, userIds, typeIds, from, to}
 function frag(q) {
@@ -47,7 +53,8 @@ const SHEETS = {
              acc.profile_address, acc.profile_work,
              (SELECT COUNT(*) FROM pages p WHERE p.account_id = acc.id) pages,
              acc.status, acc.followers, acc.posts_count, acc.posts_today, acc.shares, acc.reactions,
-             acc.comments, acc.last_checked_at, acc.notes, acc.created_at
+             acc.comments, acc.friend_requests, acc.groups_joined, acc.group_shares,
+             acc.last_checked_at, acc.notes, acc.created_at
       FROM accounts acc JOIN users u ON u.id = acc.user_id JOIN account_types t ON t.id = acc.type_id
       LEFT JOIN sites s ON s.id = acc.site_id ${f.sql()} ORDER BY u.name, acc.name`).all(...f.args);
     return {
@@ -66,7 +73,7 @@ const SHEETS = {
     const rows = db.prepare(`
       SELECT u.name owner, acc.name account, t.name type, p.name, p.url, p.address, p.work,
              p.status, p.followers, p.posts_count, p.posts_today, p.shares, p.reactions,
-             p.comments, p.last_checked_at, p.note
+             p.comments, p.friend_requests, p.groups_joined, p.group_shares, p.last_checked_at, p.note
       FROM pages p JOIN accounts acc ON acc.id = p.account_id JOIN users u ON u.id = acc.user_id
       JOIN account_types t ON t.id = acc.type_id ${f.sql()} ORDER BY u.name, acc.name, p.name`).all(...f.args);
     return {
@@ -144,6 +151,32 @@ const SHEETS = {
     };
   },
 
+  // one row per (day × member) over account-level daily rows; page rows never count for compliance
+  daily(q) {
+    const f = frag(q);
+    f.eq('u.group_id', q.gid); f.in('d.user_id', q.userIds); f.eq('COALESCE(d.page_id, 0)', 0); f.dates('d.day');
+    // ponytail: only (day, member) pairs that logged something appear — a member with no row that day has no row here
+    const rows = db.prepare(`
+      SELECT d.day, u.id uid, u.name user, COUNT(DISTINCT d.account_id) updated,
+             SUM(d.d_followers) followers, SUM(d.d_posts) posts, SUM(d.d_friend_requests) friend_requests,
+             SUM(d.d_groups_joined) groups_joined, SUM(d.d_group_shares) group_shares
+      FROM account_daily d JOIN users u ON u.id = d.user_id ${f.sql()}
+      GROUP BY d.day, u.id ORDER BY d.day DESC, u.name`).all(...f.args);
+    const active = activeAccounts();
+    return {
+      title: 'التقدم اليومي',
+      columns: [col('التاريخ', 14), col('المستخدم', 22), col('الحسابات', 10), col('محدّثة', 10), col('متبقية', 10),
+        col('نسبة الالتزام %', 14), col('متابعون جدد', 12), col('منشورات جديدة', 12), col('طلبات صداقة', 12),
+        col('مجموعات جديدة', 14), col('مشاركات في المجموعات', 18)],
+      rows: rows.map((x) => {
+        const total = active.get(x.uid) || 0;
+        return [x.day, x.user, total, x.updated, Math.max(0, total - x.updated),
+          total ? Math.min(100, Math.round((x.updated * 100) / total)) : 0,
+          x.followers, x.posts, x.friend_requests, x.groups_joined, x.group_shares];
+      }),
+    };
+  },
+
   summary(q) {
     const uf = frag(q);
     uf.eq('group_id', q.gid); uf.in('id', q.userIds); uf.eq('role', 'user');
@@ -161,17 +194,35 @@ const SHEETS = {
       }
       return groupTasks.get(g);
     };
+
+    // daily compliance + growth over the sheet's range, from the account-level daily rows
+    const df = frag(q);
+    df.eq('u.group_id', q.gid); df.in('d.user_id', q.userIds); df.eq('COALESCE(d.page_id, 0)', 0); df.dates('d.day');
+    const dailyJoin = `FROM account_daily d JOIN users u ON u.id = d.user_id ${df.sql()}`;
+    const dailyByUser = new Map(db.prepare(`SELECT d.user_id uid, COUNT(*) acc_days, SUM(d.d_followers) followers,
+      SUM(d.d_posts) posts, SUM(d.d_friend_requests) friend_requests, SUM(d.d_group_shares) group_shares
+      ${dailyJoin} GROUP BY d.user_id`).all(...df.args).map((x) => [x.uid, x]));
+    const activeAcc = activeAccounts();
+    // compliance denominator = accounts × calendar days in the range; an open range falls back to the days that have data
+    const spanDays = q.from && q.to
+      ? Math.max(1, Math.round((Date.parse(q.to) - Date.parse(q.from)) / 86400000) + 1)
+      : db.prepare(`SELECT COUNT(DISTINCT d.day) n ${dailyJoin}`).get(...df.args).n;
     return {
       title: 'الملخص',
       columns: [col('الاسم', 22), col('الحسابات', 10), ...types.map((t) => col(t.name, 12)),
-        col('المهام المنجزة/الإجمالي', 16), col('نسبة الإنجاز %', 14)],
+        col('المهام المنجزة/الإجمالي', 16), col('نسبة الإنجاز %', 14),
+        col('الالتزام اليومي %', 16), col('متابعون جدد', 12), col('منشورات جديدة', 12), col('طلبات صداقة', 12),
+        col('مشاركات في المجموعات', 18)],
       rows: scopedUsers.map((u) => {
         const counts = new Map(db.prepare('SELECT type_id, COUNT(*) c FROM accounts WHERE user_id = ? GROUP BY type_id').all(u.id)
           .map((x) => [x.type_id, x.c]));
         const tasks = u.group_id ? tasksFor(u.group_id) : [];
         const done = tasks.reduce((n, t) => n + taskDone(t.id, [u.id]), 0);
+        const dd = dailyByUser.get(u.id), owed = (activeAcc.get(u.id) || 0) * spanDays;
         return [u.name, types.reduce((n, t) => n + (counts.get(t.id) || 0), 0), ...types.map((t) => counts.get(t.id) || 0),
-          `${done}/${tasks.length}`, tasks.length ? Math.round((done * 100) / tasks.length) : 0];
+          `${done}/${tasks.length}`, tasks.length ? Math.round((done * 100) / tasks.length) : 0,
+          dd && owed ? Math.min(100, Math.round((dd.acc_days * 100) / owed)) : 0,
+          dd?.followers ?? 0, dd?.posts ?? 0, dd?.friend_requests ?? 0, dd?.group_shares ?? 0];
       }),
     };
   },

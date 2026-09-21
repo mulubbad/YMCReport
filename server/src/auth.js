@@ -44,16 +44,22 @@ const FORBIDDEN = { error: 'ليست لديك صلاحية لتنفيذ هذا �
 
 // ---- group scope -------------------------------------------------------------------------------
 // An admin may LEAD SEVERAL groups (table admin_groups); users.group_id stays their default one.
+// A super may ALSO lead groups: that adds them to the team, it never narrows what they can see.
 // Every scoped route resolves one active group through scopeGid(), so each group is an encapsulated
 // workspace: the admin is effectively a super restricted to their own set.
 
-// group ids the caller controls. super -> null (means "every group"); admin -> admin_groups;
-// member -> their own group. Never returns null for admin/user, so `.includes` is always safe.
+// groups this user LEADS, from admin_groups. Leadership is a MEMBERSHIP, not a permission level —
+// which is why a super may lead specific teams (shows in نبض الفريق, receives the leader
+// notifications) while managedIds() still reports that they manage every group.
+const ledIds = (id) => require('./db').prepare('SELECT group_id FROM admin_groups WHERE user_id = ? ORDER BY group_id')
+  .all(id).map((r) => r.group_id);
+
+// group ids the caller controls. super -> null (means "every group", led or not); admin -> the groups
+// they lead; member -> their own group. Never returns null for admin/user, so `.includes` is safe.
 function managedIds(me) {
   if (me.role === 'super') return null;
   if (me.role !== 'admin') return me.group_id ? [me.group_id] : [];
-  return require('./db').prepare('SELECT group_id FROM admin_groups WHERE user_id = ? ORDER BY group_id')
-    .all(me.id).map((r) => r.group_id);
+  return ledIds(me.id);
 }
 
 // may the caller manage this group? Guards every id-addressed row (account/sim/task/note/user).
@@ -78,7 +84,8 @@ function scopeGid(req, res) {
   return ids.includes(me.group_id) ? me.group_id : (ids[0] ?? null);
 }
 
-// replace an admin's managed groups (super only). Keeps users.group_id — the default group — inside the set.
+// replace the groups a leader (admin, or a super who also leads teams) leads. Super-only.
+// Keeps users.group_id — the default group — inside the set.
 const setManagedGroups = (userId, ids) => {
   const db = require('./db');
   db.transaction(() => {
@@ -99,4 +106,4 @@ function resolveOwner(me, ownerId, res) {
   return target;
 }
 
-module.exports = { sign, verify, auth, requireRole, resolveOwner, managedIds, canManage, scopeGid, setManagedGroups, FORBIDDEN };
+module.exports = { sign, verify, auth, requireRole, resolveOwner, managedIds, ledIds, canManage, scopeGid, setManagedGroups, FORBIDDEN };

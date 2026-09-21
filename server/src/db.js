@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   link TEXT, profile_address TEXT, profile_work TEXT, notes TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   followers INTEGER, posts_count INTEGER, shares INTEGER, reactions INTEGER, comments INTEGER,
+  friend_requests INTEGER, groups_joined INTEGER, group_shares INTEGER,
   last_checked_at TEXT, posts_today INTEGER, sync_seen TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS pages (
   url TEXT, address TEXT, work TEXT, note TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   followers INTEGER, posts_count INTEGER, shares INTEGER, reactions INTEGER, comments INTEGER,
+  friend_requests INTEGER, groups_joined INTEGER, group_shares INTEGER,
   last_checked_at TEXT, posts_today INTEGER, sync_seen TEXT);
 CREATE TABLE IF NOT EXISTS account_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,6 +199,29 @@ CREATE TABLE IF NOT EXISTS admin_groups (
   group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
   PRIMARY KEY (user_id, group_id));
 CREATE INDEX IF NOT EXISTS ix_admin_groups_group ON admin_groups(group_id);
+-- daily roll-up: ONE row per (account | page) per LOCAL calendar day, written by quickUpdate().
+-- followers = the latest absolute snapshot that day; d_* = the change accumulated across however many
+-- updates were logged; checks = how many were logged (>=1 whenever a row exists, a no-change check included).
+-- Compliance counts ACCOUNT-level rows only (page_id IS NULL) — the account is the unit.
+CREATE TABLE IF NOT EXISTS account_daily (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  page_id INTEGER REFERENCES pages(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  day TEXT NOT NULL,
+  followers INTEGER,
+  d_followers INTEGER NOT NULL DEFAULT 0,
+  d_posts INTEGER NOT NULL DEFAULT 0,
+  d_friend_requests INTEGER NOT NULL DEFAULT 0,
+  d_groups_joined INTEGER NOT NULL DEFAULT 0,
+  d_group_shares INTEGER NOT NULL DEFAULT 0,
+  d_shares INTEGER NOT NULL DEFAULT 0,
+  d_reactions INTEGER NOT NULL DEFAULT 0,
+  d_comments INTEGER NOT NULL DEFAULT 0,
+  checks INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+CREATE UNIQUE INDEX IF NOT EXISTS ux_account_daily ON account_daily(account_id, COALESCE(page_id, 0), day);
+CREATE INDEX IF NOT EXISTS ix_account_daily_day ON account_daily(day, user_id);
 `);
 
 // migrate pre-existing DBs: add tasks columns missing from older schemas
@@ -233,6 +258,9 @@ for (const table of ['accounts', 'pages']) {
     shares: 'shares INTEGER',
     reactions: 'reactions INTEGER',
     comments: 'comments INTEGER',
+    friend_requests: 'friend_requests INTEGER',
+    groups_joined: 'groups_joined INTEGER',
+    group_shares: 'group_shares INTEGER',
     last_checked_at: 'last_checked_at TEXT',
     // sync-only, never in TRACK: posts published today as of the last sync (meaningless once
     // last_checked_at is not today — the UI hides it), and the per-post baseline the deltas diff against.

@@ -4,6 +4,8 @@ import {
   AlertTriangle,
   AtSign,
   BarChart3,
+  CalendarCheck,
+  CalendarClock,
   CheckCircle2,
   Clock,
   Copy,
@@ -81,6 +83,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import DailyUpdate, { type DailyTarget } from "@/components/DailyUpdate"
 import { NotesButton, NotesThread } from "@/components/NotesThread"
 import { useDeepLink } from "@/lib/deeplink"
 import { OwnerOptions } from "@/components/OwnerOptions"
@@ -100,6 +103,9 @@ type Tracked = {
   status: Status
   followers: number | null
   posts_count: number | null
+  friend_requests: number | null
+  groups_joined: number | null
+  group_shares: number | null
   shares: number | null
   reactions: number | null
   comments: number | null
@@ -130,6 +136,8 @@ type Account = Tracked & {
   owner_name: string
   page_count: number
   prev_followers: number | null
+  // day of the newest account_daily row (page rows never count) — null until the first daily update
+  last_daily_day: string | null
   note_count?: number
 }
 
@@ -205,6 +213,10 @@ const syncable = (a: Account) => syncReason(a) === null
 // en-CA + local zone is the same bucketing the server uses (fb.js localDay / notify.js day()).
 const today = () => new Date().toLocaleDateString("en-CA")
 const todayValid = (at: string | null) => !!at && toDate(at).toLocaleDateString("en-CA") === today()
+// ---- daily compliance ----
+// A different clock from آخر فحص: staleness is a rolling 14 days, this is the calendar day. An account
+// synced late yesterday still owes today's update. last_daily_day is the account's own row only.
+const dueToday = (a: Account) => a.status === "active" && a.last_daily_day !== today()
 
 const fmt = (n: number | null | undefined) => (n == null ? "—" : n.toLocaleString("en-US"))
 const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : fmt(n))
@@ -257,15 +269,6 @@ const emptyPageForm = {
   followers: "",
   posts_count: "",
 }
-const emptyQuick = { followers: "", posts_count: "", shares: "", reactions: "", comments: "", status: "active" as Status, note: "" }
-// the three engagement counters behave exactly like posts_count in the quick dialog: you type what is
-// NEW since the last check and the running total is what gets stored
-const DELTAS = [
-  { key: "posts_count", label: "منشورات جديدة" },
-  { key: "shares", label: "مشاركات جديدة" },
-  { key: "reactions", label: "تفاعلات جديدة" },
-  { key: "comments", label: "تعليقات جديدة" },
-] as const
 const toNum = (s: string) => (s.trim() === "" ? null : Number(s))
 
 // ---------- small presentational pieces ----------
@@ -317,6 +320,26 @@ function LastCheck({ at }: { at: string | null }) {
       {late && " · متأخر"}
     </span>
   )
+}
+
+// Today's compliance, sitting beside آخر فحص because the two are easy to confuse. Silent for a
+// non-active account that was not updated today — it owes nothing.
+function DailyBadge({ a }: { a: Account }) {
+  if (dueToday(a))
+    return (
+      <Badge variant="danger">
+        <CalendarClock />
+        لم يُحدَّث اليوم
+      </Badge>
+    )
+  if (a.last_daily_day === today())
+    return (
+      <Badge variant="success">
+        <CalendarCheck />
+        حُدِّث اليوم
+      </Badge>
+    )
+  return null
 }
 
 // آخر فحص، plus whatever this row's sync is doing right now. One component so the table and the
@@ -508,8 +531,8 @@ export default function Accounts() {
   const [pageNotes, setPageNotes] = useState<Page | null>(null)
   const [pendingPage, setPendingPage] = useState<number | null>(null) // ?page=<id>: shown once the profile's pages load
 
-  const [quick, setQuick] = useState<{ kind: "account" | "page"; id: number; name: string; cur: Tracked } | null>(null)
-  const [quickForm, setQuickForm] = useState(emptyQuick)
+  // one wizard run: a single row from a ⚡ button, or every due account from the banner / ?daily=1
+  const [daily, setDaily] = useState<{ kind: "account" | "page"; targets: DailyTarget[] } | null>(null)
   const [saving, setSaving] = useState(false)
 
   // ----- facebook sync -----
@@ -601,6 +624,11 @@ export default function Accounts() {
     openProfile(a, page ? "pages" : (p.get("tab") ?? "details"))
     if (page) setPendingPage(page)
   })
+  // ?daily=1 — the «بانتظار تحديث اليوم» notification lands straight in the chained wizard
+  useDeepLink(["daily"], !loading, () => {
+    if (!due.length) return toast.success("كل الحسابات النشطة حُدِّثت اليوم")
+    setDaily({ kind: "account", targets: due })
+  })
   useEffect(() => {
     if (!pendingPage || !pages) return
     const pg = pages.find((x) => x.id === pendingPage)
@@ -644,12 +672,15 @@ export default function Accounts() {
     { key: "all", label: "الكل", test: () => true },
     { key: "active", label: "نشطة", icon: CheckCircle2, test: (a) => a.status === "active" },
     { key: "attention", label: "تحتاج متابعة", icon: AlertTriangle, test: needsAttention },
+    { key: "daily", label: "بانتظار تحديث اليوم", icon: CalendarClock, test: dueToday },
     { key: "inactive", label: "غير نشطة", icon: PauseCircle, test: (a) => a.status !== "active" },
     // turns scattered warning glyphs into a worklist
     { key: "unsyncable", label: "غير قابلة للمزامنة", icon: Link2Off, test: (a) => !syncable(a) },
   ]
   const rows = base.filter(CHIPS.find((c) => c.key === chip)!.test)
   const filtered = rows.length !== accounts.length
+  // the banner and the deep link work on everything loaded, never on what the filters happen to show
+  const due = accounts.filter(dueToday)
 
   // ----- sync: selection + the run itself -----
   // select-all covers the VISIBLE, syncable rows only — there is no "select the whole dataset"
@@ -867,32 +898,9 @@ export default function Accounts() {
     }
   }
 
-  // ----- quick update (account or page) -----
-  const openQuick = (kind: "account" | "page", row: { id: number; name: string } & Tracked) => {
-    setQuick({ kind, id: row.id, name: row.name, cur: row })
-    setQuickForm({ ...emptyQuick, status: row.status ?? "active" })
-  }
-  const saveQuick = async () => {
-    if (!quick) return
-    const body: Record<string, unknown> = {}
-    if (quickForm.followers.trim() !== "") body.followers = Number(quickForm.followers)
-    // these fields hold what is NEW since the last check — the server stores the running total
-    for (const d of DELTAS)
-      if (quickForm[d.key].trim() !== "") body[d.key] = (quick.cur[d.key] ?? 0) + Number(quickForm[d.key])
-    if (quickForm.status !== quick.cur.status) body.status = quickForm.status
-    if (quickForm.note.trim()) body.note = quickForm.note.trim()
-    setSaving(true)
-    try {
-      await api.post(quick.kind === "account" ? `/accounts/${quick.id}/updates` : `/pages/${quick.id}/updates`, body)
-      toast.success(quick.kind === "account" ? "تم تحديث الحساب" : "تم تحديث الصفحة")
-      setQuick(null)
-      refreshAll()
-    } catch (e) {
-      toast.error((e as Error).message)
-    } finally {
-      setSaving(false)
-    }
-  }
+  // ----- daily update (account or page) -----
+  // the ⚡ button is the same affordance as before, it just opens a one-target run of the wizard
+  const openQuick = (kind: "account" | "page", row: DailyTarget) => setDaily({ kind, targets: [row] })
 
   // one page on its own — POST /pages/:id/sync. Toasts directly: it is a single deliberate click.
   const syncPage = async (p: Page) => {
@@ -1121,6 +1129,27 @@ export default function Accounts() {
           </div>
         </CardHeader>
 
+        {/* the page's one real alarm: a count, one line of guidance, one action — and nothing at all
+            once every active account is done today */}
+        {due.length > 0 && (
+          <div
+            role="alert"
+            className="mx-4 mb-1 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-destructive/25 bg-danger-light px-4 py-3 md:mx-6"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="flex items-center gap-2 text-sm font-semibold text-destructive tabular-nums">
+                <AlertTriangle className="size-4 shrink-0" />
+                {due.length} حساب بانتظار تحديث اليوم
+              </p>
+              <p className="mt-1 text-xs text-destructive/80">التحديث اليومي مطلوب لكل حساب نشط — آخر موعد نهاية اليوم.</p>
+            </div>
+            <Button onClick={() => setDaily({ kind: "account", targets: due })}>
+              <Zap />
+              ابدأ التحديث اليومي
+            </Button>
+          </div>
+        )}
+
         {/* facebook not connected: every sync control is already disabled — this says why */}
         {conn && !conn.connected && (
           <div className="mx-4 mb-1 rounded-lg border border-primary/20 bg-primary-light px-4 py-3 md:mx-6">
@@ -1142,7 +1171,7 @@ export default function Accounts() {
           {CHIPS.map((c) => {
             const active = chip === c.key
             const count = base.filter(c.test).length
-            const alert = c.key === "attention" && count > 0
+            const alert = (c.key === "attention" || c.key === "daily") && count > 0
             return (
               <button
                 key={c.key}
@@ -1197,7 +1226,9 @@ export default function Accounts() {
                   {accounts.length
                     ? chip === "attention"
                       ? "كل الحسابات محدّثة ونشطة — أحسنت."
-                      : "جرّب تغيير البحث أو عوامل التصفية."
+                      : chip === "daily"
+                        ? "كل الحسابات النشطة حُدِّثت اليوم — أحسنت."
+                        : "جرّب تغيير البحث أو عوامل التصفية."
                     : filterUser !== "all"
                       ? "لا توجد حسابات لهذا المستخدم."
                       : "أضف أول حساب تواصل اجتماعي للبدء."}
@@ -1284,7 +1315,10 @@ export default function Accounts() {
                           )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
-                          <SyncCell at={a.last_checked_at} state={sync[a.id]} />
+                          <div className="flex flex-col items-start gap-1">
+                            <SyncCell at={a.last_checked_at} state={sync[a.id]} />
+                            <DailyBadge a={a} />
+                          </div>
                         </TableCell>
                         <TableCell>
                           {a.allows_pages ? (
@@ -1362,7 +1396,10 @@ export default function Accounts() {
                       </div>
                       <div className="rounded-md bg-muted/50 p-2">
                         <p className="text-xs text-muted-foreground">آخر فحص</p>
-                        <SyncCell at={a.last_checked_at} state={sync[a.id]} />
+                        <div className="flex flex-col items-start gap-1">
+                          <SyncCell at={a.last_checked_at} state={sync[a.id]} />
+                          <DailyBadge a={a} />
+                        </div>
                       </div>
                       <div className="rounded-md bg-muted/50 p-2">
                         <p className="text-xs text-muted-foreground">الصفحات</p>
@@ -1937,6 +1974,12 @@ export default function Accounts() {
                           tone={lastChange == null ? undefined : lastChange > 0 ? "text-success" : lastChange < 0 ? "text-destructive" : undefined}
                         />
                       </div>
+                      {/* the three daily-wizard counters — running totals, not per-day gains */}
+                      <div className="grid grid-cols-3 gap-2">
+                        <Stat label="طلبات الصداقة" value={fmt(profile.friend_requests)} />
+                        <Stat label="المجموعات المنضم إليها" value={fmt(profile.groups_joined)} />
+                        <Stat label="المشاركات في المجموعات" value={fmt(profile.group_shares)} />
+                      </div>
                       <div className="flex items-center gap-3 rounded-lg border border-dashed p-3">
                         <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary-light text-primary">
                           <FilePlus className="size-5" />
@@ -2050,70 +2093,14 @@ export default function Accounts() {
         </DialogContent>
       </Dialog>
 
-      {/* ---------- quick update (account / page) ---------- */}
-      <Dialog open={!!quick} onOpenChange={(o) => !o && setQuick(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Zap className="size-5 text-primary" />
-              تحديث سريع — {quick?.name}
-            </DialogTitle>
-            <DialogDescription>
-              أدخل عدد المتابعين الحالي كما يظهر في المنصة. أما المنشورات والمشاركات والتفاعلات والتعليقات فأدخل الجديد منها منذ آخر فحص — يُضاف تلقائيًا إلى الإجمالي. اترك الحقل فارغًا إن لم يتغير؛ الحفظ بلا تغييرات يسجّل عملية فحص فقط.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1.5">
-                <Label>المتابعون / الأصدقاء الحاليون</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  inputMode="numeric"
-                  placeholder={`العدد الحالي: ${fmt(quick?.cur.followers)}`}
-                  value={quickForm.followers}
-                  onChange={(e) => setQuickForm({ ...quickForm, followers: e.target.value })}
-                />
-              </div>
-              {DELTAS.map((d) => (
-                <div key={d.key} className="grid gap-1.5">
-                  <Label>{d.label}</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    inputMode="numeric"
-                    placeholder="أضيفت منذ آخر فحص"
-                    value={quickForm[d.key]}
-                    onChange={(e) => setQuickForm({ ...quickForm, [d.key]: e.target.value })}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    {quickForm[d.key].trim() !== ""
-                      ? `الإجمالي بعد الحفظ: ${fmt((quick?.cur[d.key] ?? 0) + Number(quickForm[d.key]))}`
-                      : `الإجمالي الحالي: ${fmt(quick?.cur[d.key])}`}
-                  </p>
-                </div>
-              ))}
-            </div>
-            <div className="grid gap-1.5">
-              <Label>الحالة</Label>
-              {statusSelect(quickForm.status, (v) => setQuickForm({ ...quickForm, status: v }))}
-            </div>
-            <div className="grid gap-1.5">
-              <Label>ملاحظة</Label>
-              <Textarea rows={2} placeholder="اختياري" value={quickForm.note} onChange={(e) => setQuickForm({ ...quickForm, note: e.target.value })} />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setQuick(null)}>
-              إلغاء
-            </Button>
-            <Button onClick={saveQuick} disabled={saving}>
-              <CheckCircle2 />
-              حفظ التحديث
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* ---------- daily update wizard (account / page) ---------- */}
+      <DailyUpdate
+        open={!!daily}
+        targets={daily?.targets ?? []}
+        kind={daily?.kind ?? "account"}
+        onOpenChange={(o) => !o && setDaily(null)}
+        onSaved={refreshAll}
+      />
     </div>
   )
 }

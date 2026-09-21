@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowUpDown,
   AtSign,
+  CalendarCheck,
   CalendarClock,
   ChevronLeft,
   CircleAlert,
@@ -40,6 +41,18 @@ type MemberRow = {
   completion: number; on_time_rate: number; overdue: number; attention: number
 }
 type Attention = { type: "task" | "account"; id: number; title: string; detail: string; severity: "danger" | "warning"; link: string }
+// daily update compliance + growth (stats.detail.daily)
+type DailyTotals = { followers: number; posts: number; friend_requests: number; groups_joined: number; group_shares: number }
+type DailyMemberRow = DailyTotals & {
+  id: number; name: string; group_name: string | null; accounts: number; updated: number
+  due: number; rate: number; last_update_at: string | null
+}
+type Daily = {
+  date: string; accounts: number; updated: number; due: number; rate: number
+  totals: DailyTotals
+  series: (DailyTotals & { date: string; updated: number })[]
+  members: DailyMemberRow[]
+}
 type Recent = { id: number; kind: string; summary: string; account_name: string; actor_name: string; created_at: string }
 type Detail = {
   range: { from: string; to: string }
@@ -53,6 +66,7 @@ type Detail = {
   members: MemberRow[]
   attention: Attention[]
   recent: Recent[]
+  daily?: Daily // absent on an older cached /stats response
 }
 type Stats = {
   users: number; accounts: number; pages: number; tasks: number; completion: number
@@ -86,6 +100,14 @@ const EVENT: Record<string, string> = {
   page_created: "إضافة صفحة", page_updated: "تعديل صفحة", page_deleted: "حذف صفحة", checked: "فحص",
 }
 const BAR: Record<string, string> = { "primary-light": "bg-primary", success: "bg-success", warning: "bg-warning-fill", info: "bg-info" }
+// the five daily metrics in the contract's order — totals row and members table share it
+const DAILY_METRICS: [keyof DailyTotals, string][] = [
+  ["followers", "متابعون جدد"],
+  ["posts", "منشورات جديدة"],
+  ["friend_requests", "طلبات صداقة"],
+  ["groups_joined", "مجموعات جديدة"],
+  ["group_shares", "مشاركات في المجموعات"],
+]
 const healthOf = (h: number) =>
   h >= 80 ? { label: "ممتاز", variant: "success" as const, stroke: "text-success" }
   : h >= 60 ? { label: "جيد", variant: "primary-light" as const, stroke: "text-primary" }
@@ -275,6 +297,9 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
         </CardContent>
       </Card>
 
+      {/* daily update compliance — hidden entirely when the server predates `daily` */}
+      {(!d || d.daily) && <DailyCard daily={d?.daily} loading={loading} />}
+
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {tiles
@@ -461,7 +486,29 @@ const bucket = (series: Series[]): Col[] =>
         }
       })
 
-function Strip({ series }: { series: Series[] }) {
+// ponytail: the daily card borrows this strip with its own wording/height instead of a second bar style
+type StripCfg = {
+  main: string
+  faint?: string // omitted → one bar per column (no background series)
+  heightCls: string
+  empty: string
+  aria: (t: { created: number; completed: number }) => string
+}
+const TEAM_STRIP: StripCfg = {
+  main: "إنجازات",
+  faint: "مهام جديدة",
+  heightCls: "h-40 sm:h-48",
+  empty: "لا توجد مهام في هذه الفترة — وسّع النطاق الزمني.",
+  aria: (t) => `نشاط الفريق يوماً بيوم: ${t.completed} إنجازاً و${t.created} مهمة جديدة خلال الفترة. استخدم الأسهم للتنقل بين الأيام.`,
+}
+const DAILY_STRIP: StripCfg = {
+  main: "حسابات محدّثة",
+  heightCls: "h-24 sm:h-28",
+  empty: "لا توجد تحديثات يومية في هذه الفترة — وسّع النطاق الزمني.",
+  aria: (t) => `الحسابات المحدّثة يوماً بيوم: ${t.completed} تحديثاً خلال الفترة. استخدم الأسهم للتنقل بين الأيام.`,
+}
+
+function Strip({ series, cfg = TEAM_STRIP }: { series: Series[]; cfg?: StripCfg }) {
   const cols = useMemo(() => bucket(series), [series])
   const n = cols.length
   const max = Math.max(1, ...cols.map((c) => Math.max(c.created, c.completed)))
@@ -476,7 +523,7 @@ function Strip({ series }: { series: Series[] }) {
   useEffect(() => setActive(null), [series])
 
   if (n === 0 || totals.created + totals.completed === 0)
-    return <Empty icon={Activity} text="لا توجد مهام في هذه الفترة — وسّع النطاق الزمني." />
+    return <Empty icon={Activity} text={cfg.empty} />
 
   const weekly = cols[0].to !== undefined
   const step = Math.ceil(n / 7)
@@ -511,16 +558,18 @@ function Strip({ series }: { series: Series[] }) {
             style={left < 20 ? { left: 0 } : left > 80 ? { right: 0 } : { left: `${left}%`, transform: "translateX(-50%)" }}
           >
             <div className="font-semibold">{label(a)}</div>
-            <div className="tabular-nums text-muted-foreground">إنجازات {a.completed} · مهام جديدة {a.created}</div>
+            <div className="tabular-nums text-muted-foreground">
+              {`${cfg.main} ${a.completed}${cfg.faint ? ` · ${cfg.faint} ${a.created}` : ""}`}
+            </div>
           </div>
         )}
         <svg
           viewBox={`0 0 ${n} 100`}
           preserveAspectRatio="none"
-          className="block h-40 w-full rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 sm:h-48"
+          className={cn("block w-full rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50", cfg.heightCls)}
           tabIndex={0}
           role="img"
-          aria-label={`نشاط الفريق يوماً بيوم: ${totals.completed} إنجازاً و${totals.created} مهمة جديدة خلال الفترة. استخدم الأسهم للتنقل بين الأيام.`}
+          aria-label={cfg.aria(totals)}
           onMouseMove={pickX}
           onMouseLeave={() => setActive(null)}
           onFocus={() => setActive((i) => i ?? n - 1)}
@@ -547,11 +596,143 @@ function Strip({ series }: { series: Series[] }) {
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-primary" aria-hidden />إنجازات <b className="tabular-nums text-foreground">{totals.completed}</b></span>
-        <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-primary/20" aria-hidden />مهام جديدة <b className="tabular-nums text-foreground">{totals.created}</b></span>
+        <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-primary" aria-hidden />{cfg.main} <b className="tabular-nums text-foreground">{totals.completed}</b></span>
+        {cfg.faint && <span className="inline-flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-primary/20" aria-hidden />{cfg.faint} <b className="tabular-nums text-foreground">{totals.created}</b></span>}
         {weekly && <span className="ms-auto">مجمّعة أسبوعياً</span>}
       </div>
     </div>
+  )
+}
+
+// ---- daily update compliance --------------------------------------------------------------------
+function DailyCard({ daily, loading }: { daily?: Daily; loading: boolean }) {
+  // the strip speaks {created, completed}; a daily column carries a single value — updated accounts
+  const strip = useMemo(
+    () => (daily?.series ?? []).map((s) => ({ date: s.date, created: 0, completed: s.updated })),
+    [daily],
+  )
+  return (
+    <Card className="gap-0 py-0">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><CalendarCheck className="size-5 text-primary" />التقدم اليومي</CardTitle>
+        <CardDescription>
+          {daily ? `التزام يوم ${fmt(daily.date, { day: "numeric", month: "long" })} ونمو الحسابات خلال الفترة` : " "}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className={cn("space-y-5 transition-opacity duration-300", loading && "opacity-60")}>
+        {!daily ? (
+          <Skeleton className="h-64 w-full" />
+        ) : (
+          <>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2 rounded-lg border border-dashed p-4">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="text-2xl font-bold leading-tight tabular-nums">{daily.updated}/{daily.accounts}</span>
+                  <span className="text-sm text-muted-foreground">حساب حُدِّث اليوم</span>
+                  <span className="ms-auto text-sm font-semibold tabular-nums">{pct(daily.rate)}</span>
+                </div>
+                <Bar value={daily.rate} cls={daily.due > 0 ? "bg-warning-fill" : "bg-success"} />
+                {daily.due > 0 ? (
+                  <Link
+                    to="/accounts?daily=1"
+                    className="flex min-h-9 items-center gap-1.5 rounded-md text-sm font-semibold text-destructive outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  >
+                    <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                    <span className="tabular-nums">{daily.due} حساب بانتظار تحديث اليوم</span>
+                    <ChevronLeft className="size-4 shrink-0" aria-hidden />
+                  </Link>
+                ) : daily.accounts > 0 ? (
+                  <p className="flex min-h-9 items-center gap-1.5 text-sm text-success">
+                    <CircleCheck className="size-4 shrink-0" aria-hidden />كل الحسابات النشطة حُدِّثت اليوم.
+                  </p>
+                ) : (
+                  <p className="flex min-h-9 items-center text-sm text-muted-foreground">لا توجد حسابات نشطة في هذا النطاق.</p>
+                )}
+              </div>
+              <dl className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-5">
+                {DAILY_METRICS.map(([key, label]) => (
+                  <div key={key} className="rounded-md bg-muted px-1 py-2">
+                    <dt className="text-muted-foreground">{label}</dt>
+                    <dd className="text-lg font-bold tabular-nums">{daily.totals?.[key] ?? 0}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+            <Strip series={strip} cfg={DAILY_STRIP} />
+            {(daily.members ?? []).length === 0 ? (
+              <Empty icon={Users} text="لا يوجد أعضاء نشطون في هذا النطاق — غيّر المجموعة من مبدّل مساحة العمل." />
+            ) : (
+              <DailyMembers members={daily.members} />
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+type DailySortKey = "rate" | keyof DailyTotals
+const DAILY_COLS: [DailySortKey, string][] = [["rate", "الالتزام"], ...DAILY_METRICS]
+
+function DailyMembers({ members }: { members: DailyMemberRow[] }) {
+  const [sort, setSort] = useState<{ key: DailySortKey; desc: boolean }>({ key: "rate", desc: true })
+  const rows = useMemo(
+    () => [...members].sort((a, b) => (sort.desc ? b[sort.key] - a[sort.key] : a[sort.key] - b[sort.key])),
+    [members, sort],
+  )
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow className="hover:bg-transparent">
+          <TableHead>العضو</TableHead>
+          <TableHead>الحسابات</TableHead>
+          <TableHead>محدّثة</TableHead>
+          {DAILY_COLS.map(([key, label]) => (
+            <TableHead key={key} aria-sort={sort.key === key ? (sort.desc ? "descending" : "ascending") : "none"}>
+              <button
+                type="button"
+                onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : true }))}
+                className={cn("inline-flex min-h-10 items-center gap-1 rounded-md whitespace-nowrap uppercase outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50", sort.key === key && "text-foreground")}
+              >
+                {label}
+                <ArrowUpDown className="size-3" aria-hidden />
+              </button>
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((m) => (
+          <TableRow key={m.id}>
+            <TableCell>
+              <div className="flex items-center gap-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary-light text-xs font-semibold text-primary">{initials(m.name)}</div>
+                <div className="min-w-0">
+                  <div className="max-w-[9rem] truncate font-semibold sm:max-w-none">{m.name}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {[m.group_name ?? "بلا مجموعة", m.last_update_at ? ago(m.last_update_at) : "لم يُحدِّث بعد"].join(" · ")}
+                  </div>
+                </div>
+              </div>
+            </TableCell>
+            <TableCell className="tabular-nums">{m.accounts}</TableCell>
+            <TableCell className="whitespace-nowrap tabular-nums">
+              {m.updated}
+              {m.due > 0 && <span className="ms-1.5 text-xs font-semibold text-destructive">متبقية {m.due}</span>}
+            </TableCell>
+            <TableCell>
+              <div className="flex items-center gap-2">
+                <div className="w-14 sm:w-24"><Bar value={m.rate} cls={m.due > 0 ? "bg-warning-fill" : "bg-success"} /></div>
+                <span className="tabular-nums">{pct(m.rate)}</span>
+              </div>
+            </TableCell>
+            {DAILY_METRICS.map(([key]) => (
+              <TableCell key={key} className="tabular-nums">{m[key]}</TableCell>
+            ))}
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   )
 }
 

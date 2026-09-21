@@ -4,6 +4,7 @@ import {
   ArrowUp,
   ArrowUpDown,
   BarChart3,
+  CalendarCheck,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -45,6 +46,7 @@ const SHEETS: { key: string; label: string; icon: typeof KeyRound; desc?: string
   { key: "pages", label: "الصفحات", icon: FileText },
   { key: "tasks", label: "المهام", icon: ListChecks },
   { key: "interactions", label: "التفاعلات", icon: MessageSquare },
+  { key: "daily", label: "التقدم اليومي", icon: CalendarCheck, desc: "التزام التحديث اليومي والنمو لكل عضو" },
   { key: "summary", label: "الملخص", icon: BarChart3 },
   { key: "events", label: "سجل التحديثات", icon: History },
 ]

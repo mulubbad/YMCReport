@@ -1,7 +1,7 @@
 const db = require('./db');
 const { push } = require('./push');
 
-const KINDS = new Set(['task_new', 'task_due_soon', 'task_overdue', 'task_done', 'account_stale', 'account_status', 'task_nudge', 'message', 'mention', 'comment', 'profile_request', 'profile_reviewed']);
+const KINDS = new Set(['task_new', 'task_due_soon', 'task_overdue', 'task_done', 'account_stale', 'account_status', 'task_nudge', 'message', 'mention', 'comment', 'profile_request', 'profile_reviewed', 'account_daily_due', 'group_daily_due']);
 const ins = db.prepare('INSERT OR IGNORE INTO notifications (user_id, key, kind, title, body, link) VALUES (?,?,?,?,?,?)');
 // idempotent per (user, key) — UNIQUE(user_id, key) + INSERT OR IGNORE. kind enum lives here (no DB CHECK)
 const insert = db.transaction((userIds, { key, kind, title, body = null, link = null }) => {
@@ -39,7 +39,10 @@ function isoWeek(d = new Date()) {
   return `${t.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
 }
 
-// poll-time generators for the caller (due_soon / overdue tasks, stale accounts); cheap + idempotent via keys
+// ponytail: a leader is only nudged about a miss late in the day; before that it is not yet a miss.
+const DAILY_DIGEST_HOUR = 16;
+
+// poll-time generators for the caller (due_soon / overdue tasks, stale accounts, daily updates); cheap + idempotent via keys
 function generateDerived(user) {
   const { taskDone, STALE_DAYS } = require('./routes/tasks'); // lazy: tasks.js requires this module
   const today = day(0), tomorrow = day(1);
@@ -60,6 +63,31 @@ function generateDerived(user) {
   for (const a of stale)
     notify([user.id], { key: `account:${a.id}:stale:${week}`, kind: 'account_stale', title: `حساب يحتاج فحصًا: ${a.name}`,
       body: `آخر فحص: ${a.last_checked_at ? a.last_checked_at.slice(0, 10) : 'لم يُفحص بعد'}`, link: `/accounts?account=${a.id}` });
+
+  // ---- daily update compliance -------------------------------------------------------------
+  // same predicate as accounts.js DUE_TODAY_SQL (inlined here: accounts.js requires this module)
+  const dueSql = `a.status = 'active' AND NOT EXISTS (
+    SELECT 1 FROM account_daily d WHERE d.account_id = a.id AND d.page_id IS NULL AND d.day = ?)`;
+  const mine = db.prepare(`SELECT a.id, a.name FROM accounts a WHERE a.user_id = ? AND ${dueSql} ORDER BY a.name`)
+    .all(user.id, today);
+  if (mine.length)
+    notify([user.id], { key: `daily:${user.id}:${today}`, kind: 'account_daily_due',
+      title: `${mine.length} حساب بانتظار تحديث اليوم`,
+      body: mine.slice(0, 3).map((a) => a.name).join('، ') + (mine.length > 3 ? ` و${mine.length - 3} غيرها` : ''),
+      link: '/accounts?daily=1' });
+
+  // leaders get ONE digest per group per day, and only once the day is effectively over
+  if (user.role === 'admin' && new Date().getHours() >= DAILY_DIGEST_HOUR)
+    for (const gid of db.prepare('SELECT group_id FROM admin_groups WHERE user_id = ?').all(user.id).map((r) => r.group_id)) {
+      const rows = db.prepare(`SELECT u.name, COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id
+        WHERE u.group_id = ? AND u.role = 'user' AND u.active = 1 AND ${dueSql} GROUP BY u.id ORDER BY c DESC`).all(gid, today);
+      if (!rows.length) continue;
+      const n = rows.reduce((s, r) => s + r.c, 0);
+      notify([user.id], { key: `daily:group:${gid}:${today}`, kind: 'group_daily_due',
+        title: `${n} حساب لم يُحدَّث اليوم`,
+        body: rows.slice(0, 3).map((r) => `${r.name} (${r.c})`).join('، ') + (rows.length > 3 ? ` و${rows.length - 3} غيرهم` : ''),
+        link: '/' });
+    }
 }
 
-module.exports = { notify, groupAdmins, day, generateDerived };
+module.exports = { notify, groupAdmins, day, generateDerived, DAILY_DIGEST_HOUR };

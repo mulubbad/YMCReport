@@ -55,7 +55,7 @@ type UserRow = {
   name: string
   role: "super" | "admin" | "user"
   group_id: number | null
-  group_ids?: number[]          // admins: every group they lead
+  group_ids?: number[]          // leaders (admin, or a super who also leads a team): the groups they lead
   active: number
   last_seen_at: string | null
 }
@@ -180,8 +180,8 @@ export default function Users() {
         ? {
             role: form.role,
             group_id: form.group_id ? Number(form.group_id) : null,
-            // which groups this admin leads; ignored by the server for other roles
-            ...(form.role === "admin" ? { group_ids: form.group_ids } : {}),
+            // which groups this leader leads — a super may lead teams too; ignored for members
+            ...(form.role !== "user" ? { group_ids: form.group_ids } : {}),
           }
         : {}
       if (editing) {
@@ -524,12 +524,13 @@ export default function Users() {
                       </SelectContent>
                     </Select>
                   </div>
-                  {form.role === "admin" && (
+                  {form.role !== "user" && (
                     <div className="space-y-2 sm:col-span-2">
-                      <Label>المجموعات التي يديرها</Label>
+                      <Label>{form.role === "super" ? "الفرق التي يقودها" : "المجموعات التي يديرها"}</Label>
                       <p className="text-xs text-muted-foreground">
-                        يدير كل مجموعة محدَّدة بالكامل، ويتنقّل بينها من مبدّل مساحة العمل. المجموعة
-                        الأساسية أعلاه تُضاف تلقائيًا.
+                        {form.role === "super"
+                          ? "المشرف العام يرى كل المجموعات أصلًا؛ التحديد هنا يجعله قائد الفريق أيضًا — يظهر في «نبض الفريق» وتصله تنبيهات القائد. المجموعة الأساسية أعلاه تُضاف تلقائيًا."
+                          : "يدير كل مجموعة محدَّدة بالكامل، ويتنقّل بينها من مبدّل مساحة العمل. المجموعة الأساسية أعلاه تُضاف تلقائيًا."}
                       </p>
                       <div className="grid gap-1 rounded-md border p-2 sm:grid-cols-2">
                         {groups.length === 0 && (
