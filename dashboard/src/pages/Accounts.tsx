@@ -85,6 +85,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import DailyUpdate, { type DailyTarget } from "@/components/DailyUpdate"
 import { NotesButton, NotesThread } from "@/components/NotesThread"
+import { cadenceLabel } from "@/lib/cadence"
 import { useDeepLink } from "@/lib/deeplink"
 import { OwnerOptions } from "@/components/OwnerOptions"
 import { api } from "@/lib/api"
@@ -138,6 +139,8 @@ type Account = Tracked & {
   prev_followers: number | null
   // day of the newest account_daily row (page rows never count) — null until the first daily update
   last_daily_day: string | null
+  // the TYPE's update window in days; 0 = this type is never due (from account_types.update_days)
+  update_days: number
   note_count?: number
 }
 
@@ -213,10 +216,14 @@ const syncable = (a: Account) => syncReason(a) === null
 // en-CA + local zone is the same bucketing the server uses (fb.js localDay / notify.js day()).
 const today = () => new Date().toLocaleDateString("en-CA")
 const todayValid = (at: string | null) => !!at && toDate(at).toLocaleDateString("en-CA") === today()
-// ---- daily compliance ----
-// A different clock from آخر فحص: staleness is a rolling 14 days, this is the calendar day. An account
-// synced late yesterday still owes today's update. last_daily_day is the account's own row only.
-const dueToday = (a: Account) => a.status === "active" && a.last_daily_day !== today()
+// ---- update cadence compliance ----
+// A different clock from آخر فحص: staleness is a rolling 14 days, this is the window the account's
+// TYPE sets. last_daily_day is the account's own row only.
+// UTC-anchored on purpose: both texts are plain YYYY-MM-DD, so a DST shift cannot move the gap.
+const dayGap = (from: string, to: string) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5)
+// matches DUE_SQL: due when (today − last_daily_day) >= update_days, and never when update_days = 0
+const isDue = (a: Account) => a.status === "active" && a.update_days > 0
+  && (!a.last_daily_day || dayGap(a.last_daily_day, today()) >= a.update_days)
 
 const fmt = (n: number | null | undefined) => (n == null ? "—" : n.toLocaleString("en-US"))
 const signed = (n: number) => (n > 0 ? `+${fmt(n)}` : fmt(n))
@@ -322,24 +329,18 @@ function LastCheck({ at }: { at: string | null }) {
   )
 }
 
-// Today's compliance, sitting beside آخر فحص because the two are easy to confuse. Silent for a
-// non-active account that was not updated today — it owes nothing.
+// Cadence compliance, sitting beside آخر فحص because the two are easy to confuse. Silent outside the
+// tracked population (TRACKED_SQL): a type that opted out, or a non-active account, owes nothing —
+// a badge there would be noise. The title carries the window, which the badge text cannot.
 function DailyBadge({ a }: { a: Account }) {
-  if (dueToday(a))
-    return (
-      <Badge variant="danger">
-        <CalendarClock />
-        لم يُحدَّث اليوم
-      </Badge>
-    )
-  if (a.last_daily_day === today())
-    return (
-      <Badge variant="success">
-        <CalendarCheck />
-        حُدِّث اليوم
-      </Badge>
-    )
-  return null
+  if (a.status !== "active" || a.update_days === 0) return null
+  const due = isDue(a)
+  return (
+    <Badge variant={due ? "danger" : "success"} title={cadenceLabel(a.update_days)}>
+      {due ? <CalendarClock /> : <CalendarCheck />}
+      {due ? "متأخر عن التحديث" : "مُحدَّث"}
+    </Badge>
+  )
 }
 
 // آخر فحص، plus whatever this row's sync is doing right now. One component so the table and the
@@ -624,7 +625,7 @@ export default function Accounts() {
     openProfile(a, page ? "pages" : (p.get("tab") ?? "details"))
     if (page) setPendingPage(page)
   })
-  // ?daily=1 — the «بانتظار تحديث اليوم» notification lands straight in the chained wizard
+  // ?daily=1 — the «بانتظار التحديث» notification lands straight in the chained wizard
   useDeepLink(["daily"], !loading, () => void startDaily())
   useEffect(() => {
     if (!pendingPage || !pages) return
@@ -669,7 +670,7 @@ export default function Accounts() {
     { key: "all", label: "الكل", test: () => true },
     { key: "active", label: "نشطة", icon: CheckCircle2, test: (a) => a.status === "active" },
     { key: "attention", label: "تحتاج متابعة", icon: AlertTriangle, test: needsAttention },
-    { key: "daily", label: "بانتظار تحديث اليوم", icon: CalendarClock, test: dueToday },
+    { key: "daily", label: "بانتظار التحديث", icon: CalendarClock, test: isDue },
     { key: "inactive", label: "غير نشطة", icon: PauseCircle, test: (a) => a.status !== "active" },
     // turns scattered warning glyphs into a worklist
     { key: "unsyncable", label: "غير قابلة للمزامنة", icon: Link2Off, test: (a) => !syncable(a) },
@@ -677,7 +678,7 @@ export default function Accounts() {
   const rows = base.filter(CHIPS.find((c) => c.key === chip)!.test)
   const filtered = rows.length !== accounts.length
   // the banner and the deep link work on everything loaded, never on what the filters happen to show
-  const due = accounts.filter(dueToday)
+  const due = accounts.filter(isDue)
 
   // ----- sync: selection + the run itself -----
   // select-all covers the VISIBLE, syncable rows only — there is no "select the whole dataset"
@@ -906,7 +907,7 @@ export default function Accounts() {
   const startDaily = async () => {
     try {
       const r = await api.get("/accounts/daily")
-      if (!r.due.length) return toast.success("كل الحسابات النشطة حُدِّثت اليوم")
+      if (!r.due.length) return toast.success("كل الحسابات المتتبَّعة ضمن دوريتها")
       setDaily({ kind: "account", targets: r.due })
     } catch (e) {
       toast.error((e as Error).message)
@@ -1141,7 +1142,7 @@ export default function Accounts() {
         </CardHeader>
 
         {/* the page's one real alarm: a count, one line of guidance, one action — and nothing at all
-            once every active account is done today */}
+            once every tracked account is inside its type's window */}
         {due.length > 0 && (
           <div
             role="alert"
@@ -1150,13 +1151,13 @@ export default function Accounts() {
             <div className="min-w-0 flex-1">
               <p className="flex items-center gap-2 text-sm font-semibold text-destructive tabular-nums">
                 <AlertTriangle className="size-4 shrink-0" />
-                {due.length} حساب بانتظار تحديث اليوم
+                {due.length} حساب بانتظار التحديث
               </p>
-              <p className="mt-1 text-xs text-destructive">التحديث اليومي مطلوب لكل حساب نشط — آخر موعد نهاية اليوم.</p>
+              <p className="mt-1 text-xs text-destructive">تجاوزت هذه الحسابات دورية التحديث المحددة لنوعها.</p>
             </div>
             <Button onClick={() => void startDaily()}>
               <Zap />
-              ابدأ التحديث اليومي
+              ابدأ التحديث
             </Button>
           </div>
         )}
@@ -1238,7 +1239,7 @@ export default function Accounts() {
                     ? chip === "attention"
                       ? "كل الحسابات محدّثة ونشطة — أحسنت."
                       : chip === "daily"
-                        ? "كل الحسابات النشطة حُدِّثت اليوم — أحسنت."
+                        ? "كل الحسابات المتتبَّعة ضمن دوريتها — أحسنت."
                         : "جرّب تغيير البحث أو عوامل التصفية."
                     : filterUser !== "all"
                       ? "لا توجد حسابات لهذا المستخدم."
@@ -1949,6 +1950,11 @@ export default function Accounts() {
 
                 {/* الإحصائيات */}
                 <TabsContent value="stats" className="space-y-4 pt-2">
+                  {/* the window this account is judged by — it comes from the TYPE, not the account */}
+                  <p className="text-xs text-muted-foreground">
+                    دورية التحديث لنوع «{profile.type_name}»:{" "}
+                    <span className="font-medium text-foreground">{cadenceLabel(profile.update_days)}</span>
+                  </p>
                   {events === null ? (
                     <Skeleton className="h-40 w-full" />
                   ) : followersSeries.length === 0 ? (

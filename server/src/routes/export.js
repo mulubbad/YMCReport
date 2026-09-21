@@ -26,12 +26,6 @@ const TRACK_COLS = [col('الحالة', 10), col('المتابعون', 11), col(
 const track = (x) => [STATUS_AR[x.status] ?? x.status, x.followers, x.posts_count, x.posts_today,
   x.shares, x.reactions, x.comments, x.friend_requests, x.groups_joined, x.group_shares, ts(x.last_checked_at)];
 
-// tracked accounts per user (snapshot, not range-bound) — the compliance population: a type with
-// update_days = 0 opted out of periodic updates and is never counted as missed
-const trackedAccounts = () => new Map(db.prepare(`SELECT a.user_id, COUNT(*) c FROM accounts a
-  JOIN account_types t ON t.id = a.type_id WHERE a.status = 'active' AND t.update_days > 0
-  GROUP BY a.user_id`).all().map((x) => [x.user_id, x.c]));
-
 // WHERE builder over the shared filters q = {gid, userIds, typeIds, from, to}
 function frag(q) {
   const where = [], args = [];
@@ -170,15 +164,17 @@ const SHEETS = {
              SUM(d.d_groups_joined) groups_joined, SUM(d.d_group_shares) group_shares
       FROM account_daily d JOIN users u ON u.id = d.user_id ${f.sql()}
       GROUP BY d.day, u.id ORDER BY d.day DESC, u.name`).all(...f.args);
-    const tracked = trackedAccounts();
-    // activity, not compliance: once types carry different windows a per-day ratio is meaningless —
+    // Activity, not compliance: once types carry different windows a per-day ratio is meaningless —
     // a weekly account untouched today is not behind. The cadence-aware rate lives on الملخص.
+    // No «حسابات متتبَّعة» column here either: it would count only tracked accounts while the number
+    // beside it counts every account touched, so an opted-out type could show 3 updated out of 0.
+    // Growth on an opted-out account is still growth, so these rows stay unfiltered.
     return {
       title: 'التقدم اليومي',
-      columns: [col('التاريخ', 14), col('المستخدم', 22), col('حسابات متتبَّعة', 14), col('حُدِّثت في هذا اليوم', 18),
+      columns: [col('التاريخ', 14), col('المستخدم', 22), col('حسابات حُدِّثت', 14),
         col('متابعون جدد', 12), col('منشورات جديدة', 12), col('طلبات صداقة', 12),
         col('مجموعات جديدة', 14), col('مشاركات في المجموعات', 18)],
-      rows: rows.map((x) => [x.day, x.user, tracked.get(x.uid) || 0, x.updated,
+      rows: rows.map((x) => [x.day, x.user, x.updated,
         x.followers, x.posts, x.friend_requests, x.groups_joined, x.group_shares]),
     };
   },
@@ -205,7 +201,14 @@ const SHEETS = {
     const df = frag(q);
     df.eq('u.group_id', q.gid); df.in('d.user_id', q.userIds); df.eq('COALESCE(d.page_id, 0)', 0); df.dates('d.day');
     const dailyJoin = `FROM account_daily d JOIN users u ON u.id = d.user_id ${df.sql()}`;
-    const dailyByUser = new Map(db.prepare(`SELECT d.user_id uid, COUNT(*) acc_days, SUM(d.d_followers) followers,
+    // acc_days is the COMPLIANCE numerator, so it counts only rows on accounts whose type is on a
+    // cadence — `owed` below excludes opted-out types, and counting them on one side only inflates
+    // the rate (a member with one daily account and three «بدون» ones would read far above their
+    // real compliance). The four growth sums stay unfiltered: growth is growth, cadence or not.
+    const dailyByUser = new Map(db.prepare(`SELECT d.user_id uid, SUM(CASE WHEN EXISTS (
+        SELECT 1 FROM accounts a JOIN account_types t ON t.id = a.type_id
+        WHERE a.id = d.account_id AND a.status = 'active' AND t.update_days > 0) THEN 1 ELSE 0 END) acc_days,
+      SUM(d.d_followers) followers,
       SUM(d.d_posts) posts, SUM(d.d_friend_requests) friend_requests, SUM(d.d_group_shares) group_shares
       ${dailyJoin} GROUP BY d.user_id`).all(...df.args).map((x) => [x.uid, x]));
     // the compliance span in calendar days; an open range falls back to the days that have data.

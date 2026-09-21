@@ -621,7 +621,7 @@ function DailyCard({ daily, loading }: { daily?: Daily; loading: boolean }) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2"><CalendarCheck className="size-5 text-primary" />التقدم اليومي</CardTitle>
         <CardDescription>
-          {daily ? `التزام يوم ${fmt(daily.date, { day: "numeric", month: "long" })} ونمو الحسابات خلال الفترة` : " "}
+          {daily ? `الالتزام بدورية التحديث حتى ${fmt(daily.date, { day: "numeric", month: "long" })} ونمو الحسابات خلال الفترة` : " "}
         </CardDescription>
       </CardHeader>
       <CardContent className={cn("space-y-5 transition-opacity duration-300", loading && "opacity-60")}>
@@ -648,10 +648,10 @@ function DailyCard({ daily, loading }: { daily?: Daily; loading: boolean }) {
                   </Link>
                 ) : daily.accounts > 0 ? (
                   <p className="flex min-h-9 items-center gap-1.5 text-sm text-success">
-                    <CircleCheck className="size-4 shrink-0" aria-hidden />كل الحسابات النشطة حُدِّثت اليوم.
+                    <CircleCheck className="size-4 shrink-0" aria-hidden />كل الحسابات المتتبَّعة ضمن دوريتها.
                   </p>
                 ) : (
-                  <p className="flex min-h-9 items-center text-sm text-muted-foreground">لا توجد حسابات نشطة في هذا النطاق.</p>
+                  <p className="flex min-h-9 items-center text-sm text-muted-foreground">لا توجد حسابات ضمن دورية تحديث في هذا النطاق — راجع «دورية التحديث» في أنواع الحسابات.</p>
                 )}
               </div>
               <dl className="grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-5">

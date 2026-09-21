@@ -136,8 +136,8 @@ export default function DailyUpdate({ open, targets, kind = "account", onOpenCha
   const savedAny = useRef(false)
 
   // `targets` empties in the same commit that closes the dialog, but Radix keeps the content mounted
-  // for its 200ms exit — rendering the empty state there flashes a false «لا حسابات بانتظار تحديث
-  // اليوم» on the way out. Hold the last real target for exactly that window.
+  // for its 200ms exit — rendering the empty state there flashes a false «لا حسابات بانتظار
+  // التحديث» on the way out. Hold the last real target for exactly that window.
   const lastT = useRef<DailyTarget | undefined>(undefined)
   const t = (targets[idx] ?? (open ? undefined : lastT.current)) as DailyTarget | undefined
   if (targets[idx]) lastT.current = targets[idx]

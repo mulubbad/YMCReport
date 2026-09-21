@@ -258,12 +258,12 @@ function TypesTab({ gid }: { gid: string }) {
                 <SelectContent>
                   {/* a value set outside the presets (the API takes any 0..365) still has to show */}
                   {!CADENCE.some((c) => c.value === updateDays) && (
-                    <SelectItem value={String(updateDays)} className="tabular-nums">
+                    <SelectItem value={String(updateDays)} className="min-h-11 tabular-nums">
                       {cadenceLabel(updateDays)}
                     </SelectItem>
                   )}
                   {CADENCE.map((c) => (
-                    <SelectItem key={c.value} value={String(c.value)} className="tabular-nums">
+                    <SelectItem key={c.value} value={String(c.value)} className="min-h-11 tabular-nums">
                       {c.label}
                     </SelectItem>
                   ))}
