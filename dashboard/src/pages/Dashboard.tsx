@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import {
   Activity,
+  ArrowDown,
+  ArrowUp,
   ArrowUpDown,
   AtSign,
   CalendarCheck,
@@ -11,35 +13,45 @@ import {
   CircleCheck,
   ClipboardList,
   FileText,
+  Gauge,
+  LifeBuoy,
   Percent,
   Timer,
   TriangleAlert,
+  Trophy,
   Users,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { KINDS, ago, arDays, initials, type Kind } from "@/components/tasks/shared"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { RangePresets, VALID, addDays, ymd } from "@/lib/range"
 import { useScope } from "@/lib/scope"
 import { cn } from "@/lib/utils"
 
 // ---- contract shapes (CONTRACT.md "Manager dashboard") ------------------------------------------
 type Status = "active" | "restricted" | "suspended" | "closed"
 type Series = { date: string; created: number; completed: number }
+// performance (CONTRACT.md "Performance indicators"): score/compliance are null when nothing applies
 type Group = {
   id: number; name: string; members: number; accounts: number; tasks: number
   completion: number; on_time_rate: number; overdue: number; attention: number; health: number
+  compliance?: number | null; score?: number | null; prev_score?: number | null; followers?: number
 }
 type MemberRow = {
   id: number; name: string; group_name: string | null; done: number; total: number
-  completion: number; on_time_rate: number; overdue: number; attention: number
+  completion: number; on_time_rate: number | null; overdue: number; attention: number
+  accounts: number; pages: number; compliance: number | null; account_updates: number; page_updates: number
+  active_days: number; followers: number; posts: number; engagement: number
+  score: number | null; prev_score: number | null
 }
+type PrevKpis = { tasks_created: number; completions: number; completion_rate: number; on_time_rate: number; score: number | null; compliance: number | null }
 type Attention = { type: "task" | "account"; id: number; title: string; detail: string; severity: "danger" | "warning"; link: string }
 // daily update compliance + growth (stats.detail.daily)
 type DailyTotals = { followers: number; posts: number; friend_requests: number; groups_joined: number; group_shares: number }
@@ -59,7 +71,9 @@ type Detail = {
   kpis: {
     tasks_created: number; completions: number; completion_rate: number; on_time_rate: number; overdue: number
     due_soon: number; avg_overdue_days: number; active_members: number; accounts_by_status: Partial<Record<Status, number>>
+    score?: number | null; compliance?: number | null
   }
+  prev?: { range: { from: string; to: string }; kpis: PrevKpis }
   series: Series[]
   tasks_by_kind: { kind: Kind; total: number; completion: number }[]
   groups: Group[]
@@ -75,19 +89,13 @@ type Stats = {
 }
 
 // ---- small helpers -------------------------------------------------------------------------------
-const ymd = (d: Date) => d.toLocaleDateString("en-CA")
-const addDays = (s: string, n: number) => { const d = new Date(s + "T00:00:00"); d.setDate(d.getDate() + n); return ymd(d) }
-const VALID = /^\d{4}-\d{2}-\d{2}$/
 const fmt = (s: string, o: Intl.DateTimeFormatOptions) =>
   new Date(s + "T00:00:00Z").toLocaleDateString("ar", { ...o, timeZone: "UTC", numberingSystem: "latn" })
 const pct = (n: number) => `${Math.round(n)}%`
-
-const presetsFor = (today: string) => [
-  { label: "7 أيام", from: addDays(today, -6), to: today },
-  { label: "30 يوماً", from: addDays(today, -29), to: today },
-  { label: "90 يوماً", from: addDays(today, -89), to: today },
-  { label: "هذا الشهر", from: today.slice(0, 8) + "01", to: today },
-]
+const pctOr = (n: number | null | undefined) => (n == null ? "—" : pct(n))
+const shortRange = (r: { from: string; to: string }) =>
+  r.from === r.to ? fmt(r.from, { day: "numeric", month: "short" })
+  : `${fmt(r.from, { day: "numeric", month: "short" })} – ${fmt(r.to, { day: "numeric", month: "short" })}`
 
 const STATUS: Record<Status, { label: string; variant: "success" | "warning" | "danger" | "secondary" }> = {
   active: { label: "نشط", variant: "success" },
@@ -109,10 +117,10 @@ const DAILY_METRICS: [keyof DailyTotals, string][] = [
   ["group_shares", "مشاركات في المجموعات"],
 ]
 const healthOf = (h: number) =>
-  h >= 80 ? { label: "ممتاز", variant: "success" as const, stroke: "text-success" }
-  : h >= 60 ? { label: "جيد", variant: "primary-light" as const, stroke: "text-primary" }
-  : h >= 40 ? { label: "يحتاج متابعة", variant: "warning" as const, stroke: "text-warning" }
-  : { label: "حرج", variant: "danger" as const, stroke: "text-destructive" }
+  h >= 80 ? { label: "ممتاز", variant: "success" as const, stroke: "text-success", bar: "bg-success" }
+  : h >= 60 ? { label: "جيد", variant: "primary-light" as const, stroke: "text-primary", bar: "bg-primary" }
+  : h >= 40 ? { label: "يحتاج متابعة", variant: "warning" as const, stroke: "text-warning", bar: "bg-warning-fill" }
+  : { label: "حرج", variant: "danger" as const, stroke: "text-destructive", bar: "bg-destructive" }
 
 // ---- entry: members keep the simple view, managers get the range view ---------------------------
 export default function Dashboard() {
@@ -206,9 +214,8 @@ function SimpleView({ preloaded }: { preloaded?: Stats }) {
 // ---- manager view --------------------------------------------------------------------------------
 function ManagerView({ isSuper }: { isSuper: boolean }) {
   const today = useMemo(() => ymd(new Date()), [])
-  const presets = useMemo(() => presetsFor(today), [today])
-  const [from, setFrom] = useState(presets[1].from)
-  const [to, setTo] = useState(presets[1].to)
+  const [from, setFrom] = useState(() => addDays(today, -29))
+  const [to, setTo] = useState(today)
   // the group comes from the workspace switcher; api.ts puts it on every request
   const { gid } = useScope()
   const [stats, setStats] = useState<Stats | null>(null)
@@ -234,12 +241,13 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
 
   const d = stats?.detail
   const k = d?.kpis
+  const pk = d?.prev?.kpis
   const tiles = k && stats
     ? [
-        { label: "مهام جديدة", value: String(k.tasks_created), caption: "أُنشئت خلال الفترة", icon: ClipboardList, tint: "bg-primary-light text-primary" },
-        { label: "إنجازات", value: String(k.completions), caption: "اكتمالات الأعضاء خلال الفترة", icon: CircleCheck, tint: "bg-success-light text-success" },
-        { label: "نسبة الاكتمال", value: pct(k.completion_rate), caption: "من المهام المسندة", icon: Percent, tint: "bg-primary-light text-primary" },
-        { label: "في الوقت", value: pct(k.on_time_rate), caption: "اكتملت قبل موعدها", icon: Timer, tint: "bg-success-light text-success" },
+        { label: "مهام جديدة", value: String(k.tasks_created), caption: "أُنشئت خلال الفترة", icon: ClipboardList, tint: "bg-primary-light text-primary", delta: <Delta now={k.tasks_created} before={pk?.tasks_created} neutral /> },
+        { label: "إنجازات", value: String(k.completions), caption: "اكتمالات الأعضاء خلال الفترة", icon: CircleCheck, tint: "bg-success-light text-success", delta: <Delta now={k.completions} before={pk?.completions} /> },
+        { label: "نسبة الاكتمال", value: pct(k.completion_rate), caption: "من المهام المسندة", icon: Percent, tint: "bg-primary-light text-primary", delta: <Delta now={k.completion_rate} before={pk?.completion_rate} unit="%" /> },
+        { label: "في الوقت", value: pct(k.on_time_rate), caption: "اكتملت قبل موعدها", icon: Timer, tint: "bg-success-light text-success", delta: <Delta now={k.on_time_rate} before={pk?.on_time_rate} unit="%" /> },
         { label: "متأخرة", value: String(k.overdue), caption: k.overdue ? `بمتوسط تأخير ${arDays(Math.round(k.avg_overdue_days))}` : "لا تأخير حالياً", icon: TriangleAlert, tint: "bg-danger-light text-destructive" },
         { label: "تستحق قريباً", value: String(k.due_soon), caption: "لم تكتمل بعد", icon: CalendarClock, tint: "bg-warning-light text-warning" },
         { label: "أعضاء نشطون", value: String(k.active_members), caption: "أنجزوا خلال الفترة", icon: Users, tint: "bg-info-light text-info" },
@@ -261,25 +269,7 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
       <Card className="gap-0 py-0">
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><Activity className="size-5 text-primary" />نبض الفريق</CardTitle>
-          <CardAction className="flex-wrap" role="group" aria-label="نطاق زمني سريع">
-            {presets.map((p) => {
-              const on = p.from === from && p.to === to
-              return (
-                <button
-                  key={p.label}
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => { setFrom(p.from); setTo(p.to) }}
-                  className={cn(
-                    "min-h-11 rounded-btn px-3 text-xs font-semibold transition-colors duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 sm:min-h-9",
-                    on ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground hover:bg-primary-light hover:text-primary",
-                  )}
-                >
-                  {p.label}
-                </button>
-              )
-            })}
-          </CardAction>
+          <RangePresets from={from} to={to} onPick={(f, t) => { setFrom(f); setTo(t) }} className="basis-full pt-1" />
           <div className="flex basis-full flex-wrap items-end gap-2 pt-1">
             <label className="flex w-full flex-col gap-1 text-xs text-muted-foreground sm:w-40">
               من
@@ -289,7 +279,11 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
               إلى
               <Input type="date" value={to} min={from || undefined} max={today} onChange={(e) => setTo(e.target.value)} className="h-11 sm:h-9" />
             </label>
-            {!rangeOk && <span className="text-xs text-destructive">اختر تاريخين صالحين بحيث «من» لا يتجاوز «إلى».</span>}
+            {!rangeOk ? (
+              <span className="text-xs text-destructive">اختر تاريخين صالحين بحيث «من» لا يتجاوز «إلى».</span>
+            ) : d?.prev && (
+              <span className="pb-2 text-xs text-muted-foreground">الأسهم تقارن بـ {shortRange(d.prev.range)} (فترة مماثلة سابقة)</span>
+            )}
           </div>
         </CardHeader>
         <CardContent className={cn("transition-opacity duration-300", loading && "opacity-60")}>
@@ -297,20 +291,26 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
         </CardContent>
       </Card>
 
+      {/* team performance indicators — hidden when the server predates the score */}
+      {(!d || k?.score !== undefined) && <TeamPerformance d={d} loading={loading} />}
+
       {/* daily update compliance — hidden entirely when the server predates `daily` */}
       {(!d || d.daily) && <DailyCard daily={d?.daily} loading={loading} />}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {tiles
-          ? tiles.map(({ label, value, caption, icon: Icon, tint }) => (
+          ? tiles.map(({ label, value, caption, icon: Icon, tint, delta }) => (
               <Card key={label} className="gap-4 py-5">
                 <CardContent className="flex items-start gap-3 px-5">
                   <div className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${tint}`}>
                     <Icon className="size-5" />
                   </div>
                   <div className="min-w-0">
-                    <div className="text-2xl font-bold leading-tight tabular-nums">{value}</div>
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="text-2xl font-bold leading-tight tabular-nums">{value}</span>
+                      {delta}
+                    </div>
                     <div className="truncate text-sm font-medium">{label}</div>
                     <div className="truncate text-xs text-muted-foreground">{caption}</div>
                   </div>
@@ -343,13 +343,20 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
                         <span className="truncate font-semibold">{g.name}</span>
                         <Badge variant={h.variant}>{h.label}</Badge>
                       </div>
-                      <div className="text-xs text-muted-foreground">{g.members} أعضاء · {g.accounts} حسابات</div>
-                      <dl className="grid grid-cols-4 gap-2 text-center text-xs">
+                      <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                        {g.members} أعضاء · {g.accounts} حسابات
+                        {g.score != null && (
+                          <span className="inline-flex items-center gap-1">· الأداء <b className="tabular-nums text-foreground">{g.score}</b><Delta now={g.score} before={g.prev_score} /></span>
+                        )}
+                      </div>
+                      <dl className="grid grid-cols-3 gap-2 text-center text-xs">
                         {[
                           ["المهام", String(g.tasks)],
                           ["الاكتمال", pct(g.completion)],
                           ["في الوقت", pct(g.on_time_rate)],
                           ["متأخرة", String(g.overdue)],
+                          ["الالتزام", pctOr(g.compliance)],
+                          ["متابعون جدد", g.followers == null ? "—" : String(g.followers)],
                         ].map(([l, v]) => (
                           <div key={l} className="rounded-md bg-muted px-1 py-1.5">
                             <dt className="text-muted-foreground">{l}</dt>
@@ -366,24 +373,25 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 xl:grid-cols-3">
-        <Card className="gap-0 py-0 xl:col-span-2">
-          <CardHeader>
-            <CardTitle>الأعضاء</CardTitle>
-            <CardDescription>أعلى 20 عضواً حسب الاكتمال — اضغط عنوان العمود للترتيب</CardDescription>
-          </CardHeader>
-          <CardContent className="p-0 sm:p-0">
-            {!d ? (
-              <div className="space-y-3 p-4">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
-            ) : (d.members ?? []).length === 0 ? (
-              <div className="p-4"><Empty icon={Users} text="لا يوجد أعضاء لديهم مهام في هذه الفترة — وسّع النطاق الزمني." /></div>
-            ) : (
-              <MembersTable members={d.members} />
-            )}
-          </CardContent>
-        </Card>
+      <Card className="gap-0 py-0">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Gauge className="size-5 text-primary" />أداء الأعضاء</CardTitle>
+          <CardDescription>
+            كل الأعضاء مرتّبين حسب مؤشر الأداء — العمل على حساباتهم وصفحاتهم ومهامهم خلال الفترة. اضغط عنوان العمود للترتيب.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="p-0 sm:p-0">
+          {!d ? (
+            <div className="space-y-3 p-4">{Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-10 w-full" />)}</div>
+          ) : (d.members ?? []).length === 0 ? (
+            <div className="p-4"><Empty icon={Users} text="لا يوجد أعضاء في هذا النطاق — غيّر المجموعة من مبدّل مساحة العمل." /></div>
+          ) : (
+            <MembersTable members={d.members} />
+          )}
+        </CardContent>
+      </Card>
 
-        <div className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-2">
           <Card className="gap-0 py-0">
             <CardHeader>
               <CardTitle>المهام حسب النوع</CardTitle>
@@ -418,7 +426,6 @@ function ManagerView({ isSuper }: { isSuper: boolean }) {
               )}
             </CardContent>
           </Card>
-        </div>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-2">
@@ -741,28 +748,173 @@ function DailyMembers({ members }: { members: DailyMemberRow[] }) {
   )
 }
 
+// ---- team performance indicators ------------------------------------------------------------------
+// score weights live on the server (SCORE_W): compliance 50 · completion 30 · on time 20, over the parts that apply
+function TeamPerformance({ d, loading }: { d?: Detail; loading: boolean }) {
+  const k = d?.kpis, pk = d?.prev?.kpis
+  const ms = d?.members ?? []
+  const sum = (f: (m: MemberRow) => number) => ms.reduce((n, m) => n + f(m), 0)
+  const scored = ms.filter((m) => m.score != null).sort((a, b) => b.score! - a.score!)
+  const support = scored.filter((m) => m.score! < 60).slice(-3).reverse()
+  const h = k?.score != null ? healthOf(k.score) : null
+  const parts: [string, number | null | undefined, number | null | undefined][] = k
+    ? [["الالتزام بدورية التحديث", k.compliance, pk?.compliance], ["اكتمال المهام", k.completion_rate, pk?.completion_rate], ["الإنجاز في الوقت", k.on_time_rate, pk?.on_time_rate]]
+    : []
+  return (
+    <Card className="gap-0 py-0">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><Gauge className="size-5 text-primary" />مؤشرات أداء الفريق</CardTitle>
+        <CardDescription>مؤشر من 100: 50% الالتزام بدورية تحديث الحسابات · 30% اكتمال المهام · 20% الإنجاز في الوقت</CardDescription>
+      </CardHeader>
+      <CardContent className={cn("space-y-5 transition-opacity duration-300", loading && "opacity-60")}>
+        {!k ? (
+          <Skeleton className="h-48 w-full" />
+        ) : (
+          <>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,18rem)_1fr]">
+              <div className="flex items-center gap-4 rounded-lg border border-dashed p-4">
+                <Ring value={k.score ?? 0} cls={h?.stroke ?? "text-muted-foreground"} label="مؤشر أداء الفريق" />
+                <div className="min-w-0 space-y-1.5">
+                  {h ? <Badge variant={h.variant}>{h.label}</Badge> : <p className="text-sm text-muted-foreground">لا بيانات كافية في هذه الفترة</p>}
+                  {pk?.score != null && (
+                    <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                      الفترة السابقة <b className="tabular-nums text-foreground">{pk.score}</b><Delta now={k.score} before={pk.score} />
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {parts.map(([label, v, b]) => (
+                  <div key={label} className="space-y-2 rounded-lg border border-dashed p-4">
+                    <div className="text-xs text-muted-foreground">{label}</div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-xl font-bold tabular-nums">{pctOr(v)}</span>
+                      <Delta now={v} before={b} unit="%" />
+                    </div>
+                    <Bar value={v ?? 0} cls={v == null ? "bg-muted" : healthOf(v).bar} />
+                  </div>
+                ))}
+              </div>
+            </div>
+            <dl className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-3 lg:grid-cols-6">
+              {([
+                ["تحديثات الحسابات", sum((m) => m.account_updates)],
+                ["تحديثات الصفحات", sum((m) => m.page_updates)],
+                ["متابعون جدد", sum((m) => m.followers)],
+                ["منشورات جديدة", sum((m) => m.posts)],
+                ["التفاعل", sum((m) => m.engagement)],
+                ["أعضاء حدّثوا حساباتهم", ms.filter((m) => m.active_days > 0).length],
+              ] as const).map(([label, v]) => (
+                <div key={label} className="rounded-md bg-muted px-1 py-2">
+                  <dt className="text-muted-foreground">{label}</dt>
+                  <dd className="text-lg font-bold tabular-nums">{v}</dd>
+                </div>
+              ))}
+            </dl>
+            <div className="grid gap-4 md:grid-cols-2">
+              <People title="الأعلى أداءً" icon={Trophy} tint="bg-success-light text-success" rows={scored.slice(0, 3)} empty="لا يوجد أعضاء لهم مؤشر في هذه الفترة." />
+              <People title="يحتاجون دعماً (أقل من 60)" icon={LifeBuoy} tint="bg-warning-light text-warning" rows={support} empty="لا يوجد عضو تحت 60 — أداء الفريق متوازن." />
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function People({ title, icon: Icon, tint, rows, empty }: { title: string; icon: typeof Trophy; tint: string; rows: MemberRow[]; empty: string }) {
+  return (
+    <div className="space-y-2 rounded-lg border border-dashed p-3">
+      <div className="flex items-center gap-2 text-sm font-semibold">
+        <span className={cn("flex size-7 items-center justify-center rounded-md", tint)}><Icon className="size-4" aria-hidden /></span>
+        {title}
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{empty}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {rows.map((m) => (
+            <li key={m.id} className="flex items-center gap-2 text-sm">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary-light text-xs font-semibold text-primary">{initials(m.name)}</span>
+              <span className="min-w-0 flex-1 truncate">{m.name}<span className="text-xs text-muted-foreground"> · الالتزام {pctOr(m.compliance)}</span></span>
+              <b className="tabular-nums">{m.score}</b>
+              <Delta now={m.score} before={m.prev_score} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// change vs the previous equally long window; `neutral` = no good/bad colour (more new tasks is neither)
+function Delta({ now, before, unit = "", neutral }: { now: number | null | undefined; before: number | null | undefined; unit?: string; neutral?: boolean }) {
+  if (now == null || before == null || Math.round(now - before) === 0) return null
+  const diff = Math.round(now - before), up = diff > 0
+  const Icon = up ? ArrowUp : ArrowDown
+  return (
+    <span title="مقارنة بالفترة السابقة" className={cn("inline-flex items-center text-xs font-semibold tabular-nums", neutral ? "text-muted-foreground" : up ? "text-success" : "text-destructive")}>
+      <Icon className="size-3" aria-hidden />
+      {Math.abs(diff)}{unit}
+      <span className="sr-only">{up ? " زيادة" : " انخفاض"} عن الفترة السابقة</span>
+    </span>
+  )
+}
+
 // ---- sections ------------------------------------------------------------------------------------
-type SortKey = "completion" | "on_time_rate" | "overdue"
-const COLS: [SortKey, string][] = [["completion", "الاكتمال"], ["on_time_rate", "في الوقت"], ["overdue", "متأخرة"]]
+// one column per indicator; `val` sorts (null = not applicable → always last), `cell` renders
+type PerfCol = { key: string; label: string; val: (m: MemberRow) => number | null; cell: (m: MemberRow) => React.ReactNode }
+const num = (k: "active_days" | "followers" | "posts" | "engagement") => (m: MemberRow) => m[k]
+const PERF_COLS: PerfCol[] = [
+  {
+    key: "score", label: "مؤشر الأداء", val: (m) => m.score,
+    cell: (m) => m.score == null ? <span className="text-muted-foreground">—</span> : (
+      <div className="flex items-center gap-2">
+        <div className="w-12 sm:w-20"><Bar value={m.score} cls={healthOf(m.score).bar} /></div>
+        <span className="font-semibold tabular-nums">{m.score}</span>
+        <Delta now={m.score} before={m.prev_score} />
+      </div>
+    ),
+  },
+  { key: "compliance", label: "الالتزام", val: (m) => m.compliance, cell: (m) => pctOr(m.compliance) },
+  {
+    key: "updates", label: "التحديثات", val: (m) => m.account_updates + m.page_updates,
+    cell: (m) => <span className="whitespace-nowrap">{m.account_updates}{m.page_updates > 0 && <span className="text-xs text-muted-foreground"> + {m.page_updates} صفحة</span>}</span>,
+  },
+  { key: "active_days", label: "أيام النشاط", val: num("active_days"), cell: num("active_days") },
+  { key: "followers", label: "متابعون جدد", val: num("followers"), cell: num("followers") },
+  { key: "posts", label: "منشورات", val: num("posts"), cell: num("posts") },
+  { key: "engagement", label: "التفاعل", val: num("engagement"), cell: num("engagement") },
+  {
+    key: "completion", label: "المهام", val: (m) => (m.total ? m.completion : null),
+    cell: (m) => m.total ? <span className="whitespace-nowrap">{pct(m.completion)} <span className="text-xs text-muted-foreground">{m.done}/{m.total}</span></span> : "—",
+  },
+  { key: "on_time_rate", label: "في الوقت", val: (m) => m.on_time_rate, cell: (m) => pctOr(m.on_time_rate) },
+  { key: "overdue", label: "متأخرة", val: (m) => m.overdue, cell: (m) => <span className={cn(m.overdue > 0 && "font-semibold text-destructive")}>{m.overdue}</span> },
+]
 
 function MembersTable({ members }: { members: MemberRow[] }) {
-  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "completion", desc: true })
-  const rows = useMemo(
-    () => [...members].sort((a, b) => (sort.desc ? b[sort.key] - a[sort.key] : a[sort.key] - b[sort.key])),
-    [members, sort],
-  )
+  const [sort, setSort] = useState<{ key: string; desc: boolean }>({ key: "score", desc: true })
+  const rows = useMemo(() => {
+    const val = PERF_COLS.find((c) => c.key === sort.key)!.val
+    return [...members].sort((a, b) => {
+      const x = val(a), y = val(b)
+      if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1
+      return sort.desc ? y - x : x - y
+    })
+  }, [members, sort])
   return (
     <Table>
       <TableHeader>
         <TableRow className="hover:bg-transparent">
           <TableHead className="w-10 ps-4 sm:ps-6">#</TableHead>
           <TableHead>العضو</TableHead>
-          {COLS.map(([key, label]) => (
+          {PERF_COLS.map(({ key, label }) => (
             <TableHead key={key} aria-sort={sort.key === key ? (sort.desc ? "descending" : "ascending") : "none"}>
               <button
                 type="button"
                 onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : true }))}
-                className={cn("inline-flex min-h-10 items-center gap-1 rounded-md uppercase outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50", sort.key === key && "text-foreground")}
+                className={cn("inline-flex min-h-10 items-center gap-1 rounded-md whitespace-nowrap uppercase outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50", sort.key === key && "text-foreground")}
               >
                 {label}
                 <ArrowUpDown className="size-3" aria-hidden />
@@ -780,19 +932,15 @@ function MembersTable({ members }: { members: MemberRow[] }) {
                 <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary-light text-xs font-semibold text-primary">{initials(m.name)}</div>
                 <div className="min-w-0">
                   <div className="max-w-[9rem] truncate font-semibold sm:max-w-none">{m.name}</div>
-                  <div className="truncate text-xs text-muted-foreground">{m.group_name ?? "بلا مجموعة"}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {[m.group_name ?? "بلا مجموعة", `${m.accounts} حساب`, ...(m.pages ? [`${m.pages} صفحة`] : [])].join(" · ")}
+                  </div>
                 </div>
               </div>
             </TableCell>
-            <TableCell>
-              <div className="flex items-center gap-2">
-                <div className="w-14 sm:w-24"><Bar value={m.completion} cls="bg-success" /></div>
-                <span className="tabular-nums">{pct(m.completion)}</span>
-                <span className="hidden text-xs tabular-nums text-muted-foreground sm:inline">{m.done}/{m.total}</span>
-              </div>
-            </TableCell>
-            <TableCell className="tabular-nums">{pct(m.on_time_rate)}</TableCell>
-            <TableCell className={cn("tabular-nums", m.overdue > 0 && "font-semibold text-destructive")}>{m.overdue}</TableCell>
+            {PERF_COLS.map((c) => (
+              <TableCell key={c.key} className="tabular-nums">{c.cell(m)}</TableCell>
+            ))}
           </TableRow>
         ))}
       </TableBody>
@@ -850,11 +998,11 @@ function AttentionList({ rows }: { rows: Attention[] }) {
 }
 
 // ---- primitives ----------------------------------------------------------------------------------
-function Ring({ value, cls }: { value: number; cls: string }) {
+function Ring({ value, cls, label = "مؤشر الصحة" }: { value: number; cls: string; label?: string }) {
   const r = 28
   const c = 2 * Math.PI * r
   return (
-    <svg viewBox="0 0 72 72" className="size-[72px] shrink-0" role="img" aria-label={`مؤشر الصحة ${value} من 100`}>
+    <svg viewBox="0 0 72 72" className="size-[72px] shrink-0" role="img" aria-label={`${label} ${value} من 100`}>
       <circle cx="36" cy="36" r={r} fill="none" strokeWidth="6" className="stroke-border" />
       <circle
         cx="36" cy="36" r={r} fill="none" strokeWidth="6" strokeLinecap="round" stroke="currentColor"

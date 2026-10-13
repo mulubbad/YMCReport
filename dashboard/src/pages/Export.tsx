@@ -10,6 +10,7 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
+  Gauge,
   History,
   Inbox,
   KeyRound,
@@ -21,6 +22,7 @@ import {
 import { toast } from "sonner"
 import { api } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { RangePresets } from "@/lib/range"
 import { useScope } from "@/lib/scope"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -47,6 +49,7 @@ const SHEETS: { key: string; label: string; icon: typeof KeyRound; desc?: string
   { key: "tasks", label: "المهام", icon: ListChecks },
   { key: "interactions", label: "التفاعلات", icon: MessageSquare },
   { key: "daily", label: "التقدم اليومي", icon: CalendarCheck, desc: "التزام التحديث اليومي والنمو لكل عضو" },
+  { key: "performance", label: "مؤشرات الأداء", icon: Gauge, desc: "مؤشر أداء كل عضو وإجمالي كل فريق مقارنةً بالفترة السابقة — بلا تاريخ: آخر 30 يوماً" },
   { key: "summary", label: "الملخص", icon: BarChart3 },
   { key: "events", label: "سجل التحديثات", icon: History },
 ]
@@ -361,7 +364,11 @@ export default function Export() {
             <Label>أنواع الحسابات</Label>
             <CheckList prefix="type" items={types} selected={typeIds} onChange={setTypeIds} empty="لا توجد أنواع حسابات" />
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid content-start gap-4 sm:grid-cols-2 md:col-span-2">
+            <div className="space-y-2 sm:col-span-2">
+              <Label>المدة</Label>
+              <RangePresets from={from} to={to} onPick={(f, t) => { setFrom(f); setTo(t) }} onClear={() => { setFrom(""); setTo("") }} />
+            </div>
             <div className="space-y-2">
               <Label htmlFor="from">من</Label>
               <Input id="from" type="date" className="h-11" value={from} onChange={(e) => setFrom(e.target.value)} />

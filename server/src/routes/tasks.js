@@ -479,12 +479,119 @@ const isoDay = (s) => { const t = Date.parse(`${s}T00:00:00Z`); return /^\d{4}-\
 const addDays = (s, n) => new Date(Date.parse(`${s}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
 const daysBetween = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 864e5);
 
-// {from,to} from query (defaults: last 30 days) or {error}
-function dateRange(q) {
+// {from,to} from query (defaults: last 30 days) or {error}; `max` is the dashboard's cost cap — the
+// report sheets pass Infinity (an all-year export is fine), they only need the validation
+function dateRange(q, max = RANGE_MAX_DAYS) {
   const to = q.to || day(), from = q.from || (isoDay(to) && addDays(to, -29)); // bad `to` -> from=false -> invalid below
   if (!isoDay(from) || !isoDay(to) || from > to) return { error: 'نطاق التاريخ غير صالح (YYYY-MM-DD، ومن ≤ إلى)' };
-  if (daysBetween(from, to) + 1 > RANGE_MAX_DAYS) return { error: `نطاق التاريخ يتجاوز ${RANGE_MAX_DAYS} يومًا` };
+  if (daysBetween(from, to) + 1 > max) return { error: `نطاق التاريخ يتجاوز ${max} يومًا` };
   return { from, to };
+}
+// the equally long window right before rng — what every «عن الفترة السابقة» delta compares against
+const prevRange = ({ from, to }) => ({ from: addDays(from, -(daysBetween(from, to) + 1)), to: addDays(from, -1) });
+
+const inR = (ts, { from, to }) => ts != null && ts.slice(0, 10) >= from && ts.slice(0, 10) <= to;
+// completion over tasks created in range; on-time over completions in range that have a due date; overdue = snapshot
+function rates(ps, rng) {
+  const created = ps.filter((p) => inR(p.task.created_at, rng)), timed = ps.filter((p) => p.due && inR(p.completed_at, rng));
+  const done = created.filter((p) => p.done).length, ontime = timed.filter((p) => p.on_time).length;
+  return {
+    done, total: created.length, completion: pct(done, created.length),
+    timed: timed.length, ontime, on_time_rate: pct(ontime, timed.length),
+    overdue: new Set(ps.filter((p) => p.overdue).map((p) => p.task.id)).size,
+    overdue_pct: pct(ps.filter((p) => p.overdue).length, ps.filter((p) => !p.task.archived).length),
+  };
+}
+
+// ponytail: one flat member×task pair list for the given groups; every task number is a filter over it (tiny data)
+function scopePairs(groups) {
+  const today = day();
+  const people = [], tasks = [], pairs = [];
+  for (const g of groups) {
+    const mems = db.prepare("SELECT id, name FROM users WHERE group_id = ? AND role = 'user' AND active = 1 ORDER BY name").all(g.id);
+    for (const m of mems) people.push({ ...m, group_id: g.id, group_name: g.name });
+    const ids = mems.map((m) => m.id);
+    for (const t of db.prepare('SELECT * FROM tasks WHERE group_id = ?').all(g.id)) {
+      const due = t.due_date ? t.due_date.slice(0, 10) : null;
+      tasks.push({ ...t, due });
+      const at = new Map(doneRows(t.id, ids).map((x) => [x.user_id, x.completed_at]));
+      for (const uid of ids) {
+        const completed_at = at.get(uid) ?? null;
+        pairs.push({
+          gid: g.id, uid, task: t, kind: t.kind, due, completed_at, done: completed_at != null,
+          on_time: completed_at != null && due != null && completed_at.slice(0, 10) <= due,
+          overdue: completed_at == null && !t.archived && due != null && due < today,
+        });
+      }
+    }
+  }
+  return { people, tasks, pairs };
+}
+
+// ---- performance: what each person did on their OWN accounts and pages (account_daily) ----
+// Growth is credited to the daily row's user_id (whoever did the work, even after a transfer) and
+// includes page rows; compliance belongs to the CURRENT owner over the tracked population only.
+const ACT_ZERO = { accounts: 0, pages: 0, owed: 0, checks: 0, account_updates: 0, page_updates: 0, active_days: 0,
+  followers: 0, posts: 0, friend_requests: 0, groups_joined: 0, group_shares: 0, engagement: 0 };
+function activity(uids, from, to) {
+  const out = new Map(uids.map((id) => [id, { ...ACT_ZERO }]));
+  if (!uids.length) return out;
+  const inU = uids.map(() => '?').join(',');
+  for (const { uid, ...x } of db.prepare(`SELECT d.user_id uid,
+      SUM(d.page_id IS NULL) account_updates, SUM(d.page_id IS NOT NULL) page_updates, COUNT(DISTINCT d.day) active_days,
+      SUM(d.d_followers) followers, SUM(d.d_posts) posts, SUM(d.d_friend_requests) friend_requests,
+      SUM(d.d_groups_joined) groups_joined, SUM(d.d_group_shares) group_shares,
+      SUM(d.d_shares + d.d_reactions + d.d_comments) engagement
+    FROM account_daily d WHERE d.user_id IN (${inU}) AND d.day BETWEEN ? AND ? GROUP BY d.user_id`).all(...uids, from, to))
+    Object.assign(out.get(uid), x);
+  for (const x of db.prepare(`SELECT a.user_id uid, COUNT(*) accounts,
+      (SELECT COUNT(*) FROM pages p JOIN accounts b ON b.id = p.account_id WHERE b.user_id = a.user_id) pages
+    FROM accounts a WHERE a.user_id IN (${inU}) GROUP BY a.user_id`).all(...uids))
+    Object.assign(out.get(x.uid), { accounts: x.accounts, pages: x.pages });
+  // Checks owed PER ACCOUNT = ceil(days it existed inside the range / its type's cadence), and that
+  // account's checks are capped at what it owed — so updating a weekly account seven times cannot
+  // hide a daily one never touched. Days after today are not missed yet, and neither are days before
+  // the account was added (created_at is UTC; 'localtime' puts it on the same calendar as d.day).
+  const end = to > day() ? day() : to;
+  if (from <= end)
+    for (const a of db.prepare(`SELECT a.user_id uid, t.update_days, date(a.created_at, 'localtime') born,
+        (SELECT COUNT(*) FROM account_daily d WHERE d.account_id = a.id AND d.page_id IS NULL AND d.day BETWEEN ? AND ?) n
+      FROM accounts a JOIN account_types t ON t.id = a.type_id WHERE a.user_id IN (${inU}) AND ${TRACKED_SQL}`).all(from, end, ...uids)) {
+      const start = a.born > from ? a.born : from;
+      if (start > end) continue;
+      const owed = Math.ceil((daysBetween(start, end) + 1) / a.update_days), o = out.get(a.uid);
+      o.owed += owed;
+      o.checks += Math.min(a.n, owed);
+    }
+  return out;
+}
+
+// مؤشر الأداء 0–100: cadence compliance 50% · task completion 30% · on time 20%, weighted over the
+// parts that APPLY — someone with no tracked accounts is scored on tasks alone, someone with no
+// tasks in the range on compliance alone; nothing applicable → null, never a free 0.
+const SCORE_W = [['owed', 'checks', 0.5], ['total', 'done', 0.3], ['timed', 'ontime', 0.2]];
+function score(x) {
+  const parts = SCORE_W.filter(([d]) => x[d] > 0);
+  const w = parts.reduce((s, [, , wt]) => s + wt, 0);
+  return w ? Math.round(parts.reduce((s, [d, n, wt]) => s + ((x[n] * 100) / x[d]) * wt, 0) / w) : null;
+}
+const PERF_SUMS = [...Object.keys(ACT_ZERO), 'done', 'total', 'timed', 'ontime'];
+// a team's numbers are the SUM of its members' rows (not an average of rates), so the headline
+// always equals the table under it
+function rollup(rows) {
+  const s = Object.fromEntries(PERF_SUMS.map((k) => [k, rows.reduce((n, x) => n + x[k], 0)]));
+  return { ...s, compliance: s.owed ? pct(s.checks, s.owed) : null, completion: pct(s.done, s.total),
+    on_time_rate: pct(s.ontime, s.timed), score: score(s) };
+}
+// per-member performance over rng — the one computation behind the dashboard's members/groups/kpis
+// AND the «مؤشرات الأداء» report sheet, so the two can never disagree
+function performance(people, pairs, rng) {
+  const act = activity(people.map((m) => m.id), rng.from, rng.to);
+  return people.map((m) => {
+    const a = act.get(m.id), r = rates(pairs.filter((p) => p.uid === m.id), rng);
+    return { id: m.id, name: m.name, group_id: m.group_id, group_name: m.group_name, ...a, ...r,
+      compliance: a.owed ? pct(a.checks, a.owed) : null, score: score({ ...a, ...r }) };
+  });
 }
 
 function dashboardDetail(me, { from, to }, groupId) {
@@ -497,40 +604,15 @@ function dashboardDetail(me, { from, to }, groupId) {
       : [];
   const gids = groups.map((g) => g.id);
   const gin = gids.length ? `u.group_id IN (${gids.map(() => '?').join(',')})` : '0';
-  const inRange = (ts) => ts != null && ts.slice(0, 10) >= from && ts.slice(0, 10) <= to;
+  const rng = { from, to }, prev = prevRange(rng);
+  const inRange = (ts) => inR(ts, rng);
 
-  // ponytail: one flat member×task pair list; every number below is a filter over it (tiny data)
-  const people = [], tasks = [], pairs = [];
-  for (const g of groups) {
-    const mems = db.prepare("SELECT id, name FROM users WHERE group_id = ? AND role = 'user' AND active = 1 ORDER BY name").all(g.id);
-    for (const m of mems) people.push({ ...m, group_id: g.id, group_name: g.name });
-    const ids = mems.map((m) => m.id);
-    for (const t of db.prepare('SELECT * FROM tasks WHERE group_id = ?').all(g.id)) {
-      const due = t.due_date ? t.due_date.slice(0, 10) : null;
-      tasks.push({ ...t, due, created: inRange(t.created_at) });
-      const at = new Map(doneRows(t.id, ids).map((x) => [x.user_id, x.completed_at]));
-      for (const uid of ids) {
-        const completed_at = at.get(uid) ?? null;
-        pairs.push({
-          gid: g.id, uid, task: t, kind: t.kind, due, completed_at,
-          done: completed_at != null, created: inRange(t.created_at), completed: inRange(completed_at),
-          on_time: completed_at != null && due != null && completed_at.slice(0, 10) <= due,
-          overdue: completed_at == null && !t.archived && due != null && due < today,
-        });
-      }
-    }
-  }
-  // completion over tasks created in range; on-time over completions in range that have a due date; overdue = snapshot
-  const rates = (ps) => {
-    const created = ps.filter((p) => p.created), timed = ps.filter((p) => p.completed && p.due);
-    const done = created.filter((p) => p.done).length;
-    return {
-      done, total: created.length, completion: pct(done, created.length),
-      on_time_rate: pct(timed.filter((p) => p.on_time).length, timed.length),
-      overdue: new Set(ps.filter((p) => p.overdue).map((p) => p.task.id)).size,
-      overdue_pct: pct(ps.filter((p) => p.overdue).length, ps.filter((p) => !p.task.archived).length),
-    };
-  };
+  const { people, tasks: allTasks, pairs: allPairs } = scopePairs(groups);
+  const tasks = allTasks.map((t) => ({ ...t, created: inRange(t.created_at) }));
+  const pairs = allPairs.map((p) => ({ ...p, created: inRange(p.task.created_at), completed: inRange(p.completed_at) }));
+  const perf = performance(people, pairs, rng), perfPrev = performance(people, pairs, prev);
+  const prevScore = new Map(perfPrev.map((x) => [x.id, x.score]));
+  const team = rollup(perf), teamPrev = rollup(perfPrev);
   const accQ = (where, args) => ({
     count: db.prepare(`SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${where}`).get(...args).c,
     attention: db.prepare(`SELECT COUNT(*) c FROM accounts a JOIN users u ON u.id = a.user_id WHERE ${where} AND ${ATTENTION_SQL}`).get(...args, STALE_ARG).c,
@@ -539,7 +621,7 @@ function dashboardDetail(me, { from, to }, groupId) {
     + 0.2 * Math.max(0, 100 - r.overdue_pct) + 0.1 * Math.max(0, 100 - pct(acc.attention, acc.count)));
   const healthLabel = (h) => HEALTH.find(([min]) => h >= min);
 
-  const all = rates(pairs), acc = accQ(gin, gids);
+  const all = rates(pairs, rng), acc = accQ(gin, gids);
   const overdueTasks = [...new Map(pairs.filter((p) => p.overdue).map((p) => [p.task.id, p.task])).values()]
     .map((t) => ({ ...t, days: daysBetween(t.due_date.slice(0, 10), today) })).sort((a, b) => b.days - a.days);
   const soon = addDays(today, DUE_SOON_DAYS);
@@ -613,6 +695,17 @@ function dashboardDetail(me, { from, to }, groupId) {
         WHERE ${gin} AND u.role = 'user' AND u.active = 1 AND date(i.updated_at) BETWEEN ? AND ?`).get(...gids, from, to).c,
       accounts_by_status: byStatus,
       health: h, health_label, health_tone,
+      score: team.score, compliance: team.compliance,
+    },
+    // the same numbers over the equally long window right before — the tiles' «عن الفترة السابقة»
+    prev: {
+      range: prev,
+      kpis: {
+        tasks_created: tasks.filter((t) => inR(t.created_at, prev)).length,
+        completions: pairs.filter((p) => inR(p.completed_at, prev)).length,
+        completion_rate: teamPrev.completion, on_time_rate: teamPrev.on_time_rate,
+        score: teamPrev.score, compliance: teamPrev.compliance,
+      },
     },
     series: [...byDay.values()],
     daily: {
@@ -633,20 +726,26 @@ function dashboardDetail(me, { from, to }, groupId) {
     },
     tasks_by_kind: KINDS.map((kind) => ({
       kind, total: tasks.filter((t) => t.created && t.kind === kind).length,
-      completion: rates(pairs.filter((p) => p.kind === kind)).completion,
+      completion: rates(pairs.filter((p) => p.kind === kind), rng).completion,
     })),
     groups: groups.map((g) => {
-      const r = rates(pairs.filter((p) => p.gid === g.id)), a = accQ('u.group_id = ?', [g.id]), hg = health(r, a);
+      const r = rates(pairs.filter((p) => p.gid === g.id), rng), a = accQ('u.group_id = ?', [g.id]), hg = health(r, a);
       const [, label, tone] = healthLabel(hg);
+      const gp = rollup(perf.filter((x) => x.group_id === g.id)), gpPrev = rollup(perfPrev.filter((x) => x.group_id === g.id));
       return { id: g.id, name: g.name, members: people.filter((m) => m.group_id === g.id).length, accounts: a.count,
         tasks: tasks.filter((t) => t.created && t.group_id === g.id).length, completion: r.completion, on_time_rate: r.on_time_rate,
-        overdue: r.overdue, attention: a.attention, health: hg, health_label: label, health_tone: tone };
+        overdue: r.overdue, attention: a.attention, health: hg, health_label: label, health_tone: tone,
+        compliance: gp.compliance, score: gp.score, prev_score: gpPrev.score,
+        followers: gp.followers, posts: gp.posts, page_updates: gp.page_updates, engagement: gp.engagement };
     }),
-    members: people.map((m) => {
-      const r = rates(pairs.filter((p) => p.uid === m.id));
-      return { id: m.id, name: m.name, group_name: m.group_name, done: r.done, total: r.total, completion: r.completion,
-        on_time_rate: r.on_time_rate, overdue: r.overdue, attention: accQ('a.user_id = ?', [m.id]).attention };
-    }).sort((a, b) => b.completion - a.completion || a.name.localeCompare(b.name, 'ar')).slice(0, 20),
+    // EVERY member (the bottom of the list is who needs a hand, so no top-N slice), best score first
+    members: perf.map((m) => ({
+      id: m.id, name: m.name, group_name: m.group_name, done: m.done, total: m.total, completion: m.completion,
+      on_time_rate: m.timed ? m.on_time_rate : null, overdue: m.overdue, attention: accQ('a.user_id = ?', [m.id]).attention,
+      accounts: m.accounts, pages: m.pages, compliance: m.compliance, account_updates: m.account_updates,
+      page_updates: m.page_updates, active_days: m.active_days, followers: m.followers, posts: m.posts,
+      engagement: m.engagement, score: m.score, prev_score: prevScore.get(m.id) ?? null,
+    })).sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || a.name.localeCompare(b.name, 'ar')),
     attention,
     recent: db.prepare(`SELECT e.id, e.kind, e.summary, acc.name AS account_name, actor.name AS actor_name, e.created_at
       FROM account_events e JOIN accounts acc ON acc.id = e.account_id JOIN users u ON u.id = acc.user_id
@@ -750,3 +849,4 @@ module.exports = r;
 module.exports.members = members;
 module.exports.taskDone = taskDone;
 module.exports.STALE_DAYS = STALE_DAYS;
+Object.assign(module.exports, { dateRange, prevRange, scopePairs, performance, rollup, activity });

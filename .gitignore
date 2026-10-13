@@ -10,3 +10,6 @@ server/firebase-sa.json
 # scratch dev harness (screenshot runs against the scratch API on :3101)
 dashboard/vite.scratch.config.mts
 dashboard/vite.scratch.pwa-stub.ts
+
+# graphify knowledge graph — generated locally by `graphify update .`
+graphify-out/

@@ -2,7 +2,7 @@ const express = require('express');
 const ExcelJS = require('exceljs');
 const db = require('../db');
 const { auth, requireRole, scopeGid } = require('../auth');
-const { members, taskDone } = require('./tasks');
+const { members, taskDone, dateRange, prevRange, scopePairs, performance, rollup, activity } = require('./tasks');
 const { STATUS_AR, EVENT_AR } = require('./accounts');
 const { UPDATE_DAYS_AR } = require('./meta');
 const { day } = require('../notify');
@@ -197,34 +197,17 @@ const SHEETS = {
       return groupTasks.get(g);
     };
 
-    // daily compliance + growth over the sheet's range, from the account-level daily rows
+    // growth over the sheet's range, from the account-level daily rows (unfiltered by cadence: growth is growth)
     const df = frag(q);
     df.eq('u.group_id', q.gid); df.in('d.user_id', q.userIds); df.eq('COALESCE(d.page_id, 0)', 0); df.dates('d.day');
     const dailyJoin = `FROM account_daily d JOIN users u ON u.id = d.user_id ${df.sql()}`;
-    // acc_days is the COMPLIANCE numerator, so it counts only rows on accounts whose type is on a
-    // cadence — `owed` below excludes opted-out types, and counting them on one side only inflates
-    // the rate (a member with one daily account and three «بدون» ones would read far above their
-    // real compliance). The four growth sums stay unfiltered: growth is growth, cadence or not.
-    const dailyByUser = new Map(db.prepare(`SELECT d.user_id uid, SUM(CASE WHEN EXISTS (
-        SELECT 1 FROM accounts a JOIN account_types t ON t.id = a.type_id
-        WHERE a.id = d.account_id AND a.status = 'active' AND t.update_days > 0) THEN 1 ELSE 0 END) acc_days,
-      SUM(d.d_followers) followers,
+    const dailyByUser = new Map(db.prepare(`SELECT d.user_id uid, SUM(d.d_followers) followers,
       SUM(d.d_posts) posts, SUM(d.d_friend_requests) friend_requests, SUM(d.d_group_shares) group_shares
       ${dailyJoin} GROUP BY d.user_id`).all(...df.args).map((x) => [x.uid, x]));
-    // the compliance span in calendar days; an open range falls back to the days that have data.
-    // `to` is clamped to today: a normal month export (from the 1st to the 30th, run on the 21st)
-    // must not count the nine days that have not happened yet as missed.
-    const end = q.to && q.to > day() ? day() : q.to;
-    const spanDays = q.from && end
-      ? Math.max(1, Math.round((Date.parse(end) - Date.parse(q.from)) / 86400000) + 1)
-      : db.prepare(`SELECT COUNT(DISTINCT d.day) n ${dailyJoin}`).get(...df.args).n;
-    // checks owed = Σ over the member's tracked accounts of ceil(span / that type's cadence), not one
-    // multiply: a weekly type owes one check per week over the same span, and update_days = 0 owes none
-    const owedByUser = new Map();
-    for (const x of db.prepare(`SELECT a.user_id, t.update_days, COUNT(*) c FROM accounts a
-      JOIN account_types t ON t.id = a.type_id WHERE a.status = 'active' AND t.update_days > 0
-      GROUP BY a.user_id, t.update_days`).all())
-      owedByUser.set(x.user_id, (owedByUser.get(x.user_id) || 0) + x.c * Math.ceil(spanDays / x.update_days));
+    // compliance: the SAME per-account rule as «مؤشرات الأداء» (tasks.js activity()), so the two
+    // sheets of one workbook never print different rates; an open range starts at the first daily row
+    const comp = activity(scopedUsers.map((u) => u.id),
+      q.from || db.prepare(`SELECT MIN(d.day) m ${dailyJoin}`).get(...df.args).m || day(), q.to || day());
     return {
       title: 'الملخص',
       columns: [col('الاسم', 22), col('الحسابات', 10), ...types.map((t) => col(t.name, 12)),
@@ -236,14 +219,49 @@ const SHEETS = {
           .map((x) => [x.type_id, x.c]));
         const tasks = u.group_id ? tasksFor(u.group_id) : [];
         const done = tasks.reduce((n, t) => n + taskDone(t.id, [u.id]), 0);
-        const dd = dailyByUser.get(u.id), owed = owedByUser.get(u.id) || 0;
+        const dd = dailyByUser.get(u.id), c = comp.get(u.id);
         return [u.name, types.reduce((n, t) => n + (counts.get(t.id) || 0), 0), ...types.map((t) => counts.get(t.id) || 0),
           `${done}/${tasks.length}`, tasks.length ? Math.round((done * 100) / tasks.length) : 0,
-          dd && owed ? Math.min(100, Math.round((dd.acc_days * 100) / owed)) : 0,
+          c.owed ? Math.round((c.checks * 100) / c.owed) : 0,
           dd?.followers ?? 0, dd?.posts ?? 0, dd?.friend_requests ?? 0, dd?.group_shares ?? 0];
       }),
     };
   },
+};
+
+// «مؤشرات الأداء»: the dashboard's «أداء الأعضاء» rows over the range (default: the last 30 days, like
+// the dashboard), each member's score in the equally long window before, then one total row per team.
+// Type filter does not apply: a score is a person's, across all of their accounts and pages.
+SHEETS.performance = (q) => {
+  const rng = dateRange(q, Infinity); // valid: scope() already rejected a bad range
+  const groups = q.gid ? db.prepare('SELECT id, name FROM groups WHERE id = ?').all(q.gid)
+    : db.prepare('SELECT id, name FROM groups ORDER BY name').all();
+  let { people, pairs } = scopePairs(groups);
+  if (q.userIds) people = people.filter((m) => q.userIds.includes(m.id));
+  const now = performance(people, pairs, rng), before = performance(people, pairs, prevRange(rng));
+  const prev = new Map(before.map((x) => [x.id, x.score]));
+  const period = `${rng.from} → ${rng.to}`;
+  const row = (name, group, x, p, overdue) => [name, group, x.score, p,
+    x.score != null && p != null ? x.score - p : null, x.compliance, x.accounts, x.pages,
+    x.account_updates, x.page_updates, x.active_days, x.followers, x.posts, x.friend_requests,
+    x.groups_joined, x.group_shares, x.engagement, `${x.done}/${x.total}`,
+    x.total ? x.completion : null, x.timed ? x.on_time_rate : null, overdue, period];
+  return {
+    title: 'مؤشرات الأداء',
+    columns: [col('الاسم', 22), col('المجموعة', 16), col('مؤشر الأداء', 12), col('الفترة السابقة', 13),
+      col('التغيّر', 10), col('الالتزام %', 11), col('الحسابات', 10), col('الصفحات', 10),
+      col('تحديثات الحسابات', 14), col('تحديثات الصفحات', 14), col('أيام النشاط', 11),
+      col('متابعون جدد', 12), col('منشورات جديدة', 12), col('طلبات صداقة', 12), col('مجموعات جديدة', 13),
+      col('مشاركات في المجموعات', 18), col('التفاعل', 10), col('المهام المنجزة/الإجمالي', 16),
+      col('الاكتمال %', 11), col('في الوقت %', 11), col('متأخرة', 9), col('الفترة', 24)],
+    rows: [
+      ...[...now].sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || a.name.localeCompare(b.name, 'ar'))
+        .map((m) => row(m.name, m.group_name, m, prev.get(m.id) ?? null, m.overdue)),
+      // ponytail: team overdue left blank — a member's overdue counts tasks, so summing them double-counts shared ones
+      ...groups.filter((g) => now.some((m) => m.group_id === g.id)).map((g) => row('إجمالي الفريق', g.name,
+        rollup(now.filter((m) => m.group_id === g.id)), rollup(before.filter((m) => m.group_id === g.id)).score, null)),
+    ],
+  };
 };
 
 // shared filters; admin pinned to the group they are working in, null gid = all groups (super only).
@@ -252,6 +270,8 @@ function scope(req, res) {
   const gid = scopeGid(req, res);
   if (gid === false) return null;
   if (gid == null && req.user.role !== 'super') { res.status(403).json({ error: 'لا توجد مجموعة مرتبطة بحسابك' }); return null; }
+  const range = (req.query.from || req.query.to) && dateRange(req.query, Infinity);
+  if (range?.error) { res.status(400).json({ error: range.error }); return null; }
   return { gid, userIds: csvNums(req.query.user_ids), typeIds: csvNums(req.query.type_ids), from: req.query.from, to: req.query.to };
 }
 
